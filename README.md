@@ -285,7 +285,7 @@ Development Tools
 * Visual Studio Code
 * Android Studio
 * Git
-* GitHub
+* GitLab (issues, merge requests, and CI)
 
 ⸻
 
@@ -435,6 +435,8 @@ It is not intended to independently diagnose medical conditions, prescribe medic
 ⸻
 
 👨‍💻 Development Team
+
+The project is maintained by an eight-person team. Add all current members to the GitLab project with suitable roles; the roster below reflects the names currently documented.
 
 NOVA Health — Group Project
 
