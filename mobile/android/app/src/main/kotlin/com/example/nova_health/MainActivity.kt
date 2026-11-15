@@ -1,5 +1,6 @@
 package com.example.nova_health
 
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 
-class MainActivity : FlutterActivity()
+// Health Connect shows its permission screen from a FragmentActivity.
+class MainActivity : FlutterFragmentActivity()

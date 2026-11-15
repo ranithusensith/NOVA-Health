@@ -1,0 +1,31 @@
+name: nova_health
+description: NOVA Health — AI-powered personal health companion (mobile app).
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.6.0
+  flutter: ">=3.27.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  supabase_flutter: ^2.18.3
+  http: ^1.6.0
+  image_picker: ^1.2.4
+  shared_preferences: ^2.3.3
+  url_launcher: ^6.3.1
+  health: ^11.1.1
+  flutter_local_notifications: '>=20.0.0 <22.0.0'
+  timezone: ^0.10.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/brand/

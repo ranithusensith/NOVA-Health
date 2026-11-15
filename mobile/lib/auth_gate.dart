@@ -3,6 +3,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'app_shell.dart';
 import 'config.dart';
+import 'data/profile_repository.dart';
+import 'screens/health_profile_screen.dart';
 import 'screens/login_screen.dart';
 import 'theme/nova_theme.dart';
 
@@ -19,7 +21,43 @@ class AuthGate extends StatelessWidget {
       stream: auth.onAuthStateChange,
       builder: (context, snapshot) {
         final session = snapshot.data?.session ?? auth.currentSession;
-        return session == null ? const LoginScreen() : const AppShell();
+        return session == null ? const LoginScreen() : _SignedInGate(key: ValueKey(session.user.id));
+      },
+    );
+  }
+}
+
+/// After sign-in: ask the essential health questions once, then open the app.
+class _SignedInGate extends StatefulWidget {
+  const _SignedInGate({super.key});
+
+  @override
+  State<_SignedInGate> createState() => _SignedInGateState();
+}
+
+class _SignedInGateState extends State<_SignedInGate> {
+  late final Future<bool> _needsOnboarding = ProfileRepository.instance.needsOnboarding();
+  bool _done = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_done) return const AppShell();
+    return FutureBuilder<bool>(
+      future: _needsOnboarding,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          final c = context.nova;
+          return Scaffold(
+            backgroundColor: c.background,
+            body: Center(child: CircularProgressIndicator(color: c.primary)),
+          );
+        }
+        // On any error (for example offline) let the user into the app; Profile can ask again.
+        if (snapshot.hasError || snapshot.data != true) return const AppShell();
+        return HealthProfileScreen(
+          onboarding: true,
+          onDone: () => setState(() => _done = true),
+        );
       },
     );
   }

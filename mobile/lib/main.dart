@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_gate.dart';
 import 'config.dart';
 import 'data/app_prefs.dart';
+import 'services/reminder_service.dart';
 import 'theme/nova_settings.dart';
 import 'theme/nova_theme.dart';
 
@@ -17,6 +18,9 @@ Future<void> main() async {
       url: AppConfig.supabaseUrl,
       publishableKey: AppConfig.supabaseKey,
     );
+    // Medicine reminders (local notifications). Never blocks start-up.
+    await ReminderService.instance.init();
+    ReminderService.instance.attach();
   }
   runApp(const NovaApp());
 }
@@ -42,6 +46,7 @@ class NovaApp extends StatelessWidget {
           theme: NovaTheme.light(),
           darkTheme: NovaTheme.dark(),
           themeMode: prefs.themeMode,
+          navigatorKey: appNavigatorKey,
           home: home,
         ),
       ),

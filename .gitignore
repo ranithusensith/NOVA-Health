@@ -19,3 +19,12 @@ build/
 # IDE
 .vscode/
 .idea/
+mobile/dart_defines.json
+
+# Flutter local tooling
+mobile/.flutter-plugins-dependencies
+mobile/.pub-cache/
+
+# Python test and tool caches
+.pytest_cache/
+backend/.pytest_cache/
