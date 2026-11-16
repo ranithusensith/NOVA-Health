@@ -101,6 +101,23 @@ class ApiClient {
     return PrescriptionScan.fromJson(await _sendImage('/api/v1/scan/prescription', file));
   }
 
+  Future<ReportScan> scanReport(XFile file) async {
+    if (AppConfig.useMockApi) {
+      await Future<void>.delayed(const Duration(milliseconds: 1400));
+      return ReportScan(
+        reportType: 'Full blood count',
+        reportDate: DateTime.now(),
+        confidence: 0.9,
+        results: [
+          LabResultDraft(test: 'Haemoglobin', value: 11.2, unit: 'g/dL', refLow: 13, refHigh: 17, flag: 'low'),
+          LabResultDraft(test: 'White blood cells', value: 7400, unit: '/uL', refLow: 4000, refHigh: 11000, flag: 'normal'),
+          LabResultDraft(test: 'Platelets', value: 390, unit: '10^3/uL', refLow: 150, refHigh: 450, flag: 'normal'),
+        ],
+      );
+    }
+    return ReportScan.fromJson(await _sendImage('/api/v1/scan/report', file));
+  }
+
   Future<FoodScan> scanFood(XFile file) async {
     if (AppConfig.useMockApi) {
       await Future<void>.delayed(const Duration(milliseconds: 1400));
