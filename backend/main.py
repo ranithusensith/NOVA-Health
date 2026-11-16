@@ -1,9 +1,12 @@
 """
-NOVA Health backend (FastAPI), v0.2
+NOVA Health backend (FastAPI), v0.3
 
-Role: AI endpoints only. Supabase handles auth, profile, and tracking tables.
+Role: AI endpoints. Supabase handles auth, profile and tracking tables from the app.
 Every endpoint returns the format from docs/architecture/api-contract.md:
   success -> {"data": ...}      error -> {"error": {"code": ..., "message": ...}}
+
+The backend reads the user's data with the user's OWN token (see db.py), so
+row-level security applies and no secret key is needed here.
 """
 
 import logging
@@ -13,26 +16,32 @@ from datetime import date
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 load_dotenv()
 
-import llm  # noqa: E402  (after load_dotenv so env vars are set)
+import agent  # noqa: E402  (after load_dotenv so env vars are set)
+import llm  # noqa: E402
+import reports  # noqa: E402
+import rules  # noqa: E402
+import safety  # noqa: E402
 import scan  # noqa: E402
+import tools  # noqa: E402
+from db import DBError, UserDB  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_PUBLISHABLE_KEY = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
-DISCLAIMER = "This is guidance, not medical advice."
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 SCAN_DAILY_LIMIT = int(os.environ.get("SCAN_DAILY_LIMIT", "30"))
+CHAT_DAILY_LIMIT = int(os.environ.get("CHAT_DAILY_LIMIT", "100"))
 
-app = FastAPI(title="NOVA Health API", version="0.2.0")
+app = FastAPI(title="NOVA Health API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -89,21 +98,38 @@ async def current_user(authorization: str | None = Header(default=None)) -> dict
     return res.json()  # contains "id" and "email"
 
 
+async def get_db(
+    user: dict = Depends(current_user),
+    authorization: str | None = Header(default=None),
+) -> UserDB:
+    """Database access as the signed-in user (their own token, so row-level security applies)."""
+    token = authorization.split(" ", 1)[1] if authorization and " " in authorization else ""
+    return UserDB(token, user["id"])
+
+
 # ---------------------------------------------------------------
-# Scan helpers: image validation and a per-user daily quota
-# (the quota protects the free API tier; in-memory, resets on restart)
+# Daily quotas (protect the free AI tier; in memory, reset on restart)
 # ---------------------------------------------------------------
 _scan_counts: dict[tuple[str, str], int] = {}
+_chat_counts: dict[tuple[str, str], int] = {}
+
+
+def _check_quota(bucket: dict, user_id: str, limit: int, what: str) -> None:
+    today = date.today().isoformat()
+    for key in [k for k in bucket if k[1] != today]:
+        del bucket[key]
+    used = bucket.get((user_id, today), 0)
+    if used >= limit:
+        raise ApiError(429, "RATE_LIMITED", f"Daily {what} limit reached ({limit}). Try again tomorrow.")
+    bucket[(user_id, today)] = used + 1
 
 
 def check_scan_quota(user_id: str) -> None:
-    today = date.today().isoformat()
-    for key in [k for k in _scan_counts if k[1] != today]:
-        del _scan_counts[key]
-    used = _scan_counts.get((user_id, today), 0)
-    if used >= SCAN_DAILY_LIMIT:
-        raise ApiError(429, "RATE_LIMITED", f"Daily scan limit reached ({SCAN_DAILY_LIMIT}). Try again tomorrow.")
-    _scan_counts[(user_id, today)] = used + 1
+    _check_quota(_scan_counts, user_id, SCAN_DAILY_LIMIT, "scan")
+
+
+def check_chat_quota(user_id: str) -> None:
+    _check_quota(_chat_counts, user_id, CHAT_DAILY_LIMIT, "message")
 
 
 async def read_image(upload: UploadFile) -> tuple[bytes, str]:
@@ -114,6 +140,18 @@ async def read_image(upload: UploadFile) -> tuple[bytes, str]:
     if mime is None:
         raise ApiError(400, "INVALID_INPUT", "Upload a JPEG, PNG, or WebP image.")
     return data, mime
+
+
+async def safety_warnings_for(db, scanned: list[dict]) -> list[dict]:
+    """Runs the medicine rules on scanned medicines plus the ones the user already takes."""
+    try:
+        allergies = (await tools.get_allergies(db, {}))["allergies"]
+        conditions = (await tools.get_profile(db, {})).get("conditions") or []
+        existing = (await tools.get_medications(db, {}))["medications"]
+    except Exception:  # noqa: BLE001  (the check is an extra; never block a scan)
+        return []
+    meds = [{"name": m["name"], "dosage": m.get("dosage"), "times": []} for m in scanned] + existing
+    return [{"severity": w.severity, "message": w.message} for w in rules.check_all(meds, allergies, conditions)]
 
 
 # ---------------------------------------------------------------
@@ -138,24 +176,61 @@ async def me(user: dict = Depends(current_user)):
 
 
 @app.post("/api/v1/assistant/chat")
-async def chat(body: ChatRequest, user: dict = Depends(current_user)):
-    if not body.message.strip():
+async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB = Depends(get_db)):
+    message = body.message.strip()
+    if not message:
         raise HTTPException(400, "message must not be empty")
-    # TODO (next step): replace with the agent in ai-engine/engine.py
-    reply = ("Your sleep averaged about 5.5 hours and water intake was low on several "
-             "days. Try going to bed earlier and drinking more water.")
-    return {"data": {"reply": f"{reply}\n\n{DISCLAIMER}", "sources": ["sleep", "water"]}}
+    if len(message) > agent.MAX_QUESTION_CHARS:
+        raise HTTPException(400, f"message is too long ({agent.MAX_QUESTION_CHARS} characters maximum)")
+
+    # Emergency messages are never blocked by the daily limit.
+    if safety.detect_emergency(message) is None:
+        check_chat_quota(user["id"])
+
+    history: list[dict] = []
+    try:
+        rows = await db.select("chat_messages", "role,content,created_at", order="created_at.desc", limit=6)
+        history = list(reversed(rows))
+    except Exception:  # noqa: BLE001  (no history is fine)
+        pass
+
+    try:
+        result = await agent.run_agent(message, db, history=history)
+    except llm.LLMError as e:
+        raise llm_to_api_error(e)
+
+    try:  # save the conversation for next time (best effort)
+        await db.insert("chat_messages", {"user_id": user["id"], "role": "user", "content": message})
+        await db.insert("chat_messages", {"user_id": user["id"], "role": "assistant", "content": result.reply[:4000]})
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"data": {
+        "reply": result.reply,
+        "sources": result.sources,
+        "warnings": [{"severity": w["severity"], "message": w["message"]} for w in result.warnings],
+        "emergency": result.emergency,
+    }}
 
 
 @app.get("/api/v1/reports/daily")
-async def daily_report(date_: date | None = None, user: dict = Depends(current_user)):
-    # TODO: replace with engine.generate_daily_report(user["id"], date_)
-    return {"data": {"date": (date_ or date.today()).isoformat(),
-                     "report": f"Sample report: sleep was short and water was low today.\n\n{DISCLAIMER}"}}
+async def daily_report(
+    date_: date | None = Query(default=None, alias="date"),
+    user: dict = Depends(current_user),
+    db: UserDB = Depends(get_db),
+):
+    day = date_ or tools.local_today()
+    try:
+        data = await reports.daily_report(db, day)
+    except DBError as e:
+        raise ApiError(502, "SERVER_ERROR", e.message)
+    return {"data": data}
 
 
 @app.post("/api/v1/scan/prescription")
-async def scan_prescription(image: UploadFile = File(...), user: dict = Depends(current_user)):
+async def scan_prescription(
+    image: UploadFile = File(...), user: dict = Depends(current_user), db: UserDB = Depends(get_db),
+):
     data, mime = await read_image(image)
     check_scan_quota(user["id"])
     try:
@@ -164,13 +239,37 @@ async def scan_prescription(image: UploadFile = File(...), user: dict = Depends(
         raise ApiError(422, "SCAN_FAILED", str(e))
     except llm.LLMError as e:
         raise llm_to_api_error(e)
+    meds = [m.model_dump() for m in result.medications]
     return {"data": {
         "scan_id": str(uuid.uuid4()),
         "is_prescription": True,
-        "medications": [m.model_dump() for m in result.medications],
+        "medications": meds,
+        "warnings": await safety_warnings_for(db, meds),  # allergy and safety rules (fixed, not AI)
         "confidence": result.confidence,
         "notes": result.notes,
         "needs_user_confirmation": True,  # the app must confirm before saving
+    }}
+
+
+@app.post("/api/v1/scan/report")
+async def scan_report(image: UploadFile = File(...), user: dict = Depends(current_user)):
+    """Reads a lab report photo into structured test results (a draft until the user confirms)."""
+    data, mime = await read_image(image)
+    check_scan_quota(user["id"])
+    try:
+        result = await scan.scan_report(data, mime)
+    except scan.ScanError as e:
+        raise ApiError(422, "SCAN_FAILED", str(e))
+    except llm.LLMError as e:
+        raise llm_to_api_error(e)
+    return {"data": {
+        "scan_id": str(uuid.uuid4()),
+        "report_type": result.report_type,
+        "report_date": result.report_date,
+        "results": [r.model_dump() for r in result.results],
+        "confidence": result.confidence,
+        "notes": result.notes,
+        "needs_user_confirmation": True,
     }}
 
 
