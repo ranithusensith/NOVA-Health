@@ -11,20 +11,23 @@ row-level security applies and no secret key is needed here.
 
 import logging
 import os
+import time
 import uuid
 from datetime import date
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
 import agent  # noqa: E402  (after load_dotenv so env vars are set)
 import llm  # noqa: E402
+import notify  # noqa: E402
 import reports  # noqa: E402
 import rules  # noqa: E402
 import safety  # noqa: E402
@@ -45,7 +48,7 @@ app = FastAPI(title="NOVA Health API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten before the final demo
+    allow_origins=[o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -74,6 +77,13 @@ async def http_error_handler(_: Request, exc: HTTPException):
     code = {400: "INVALID_INPUT", 401: "UNAUTHORIZED", 403: "FORBIDDEN",
             404: "NOT_FOUND", 422: "INVALID_INPUT", 429: "RATE_LIMITED"}.get(exc.status_code, "SERVER_ERROR")
     return _error_response(exc.status_code, code, str(exc.detail))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_: Request, exc: RequestValidationError):
+    first = exc.errors()[0] if exc.errors() else {}
+    field = ".".join(str(x) for x in first.get("loc", []) if x != "body")
+    return _error_response(422, "INVALID_INPUT", f"Invalid input{': ' + field if field else ''}.")
 
 
 def llm_to_api_error(e: llm.LLMError) -> ApiError:
@@ -293,7 +303,45 @@ async def scan_food(image: UploadFile = File(...), user: dict = Depends(current_
     }}
 
 
+SOS_COOLDOWN_SECONDS = 30
+_sos_last: dict[str, float] = {}
+
+
+class EmergencyBody(BaseModel):
+    note: str | None = Field(default=None, max_length=200)
+
+
 @app.post("/api/v1/emergency/trigger")
-async def emergency_trigger(user: dict = Depends(current_user)):
-    # TODO: notify emergency contacts (push/SMS) and log in audit_log
-    return {"data": {"status": "triggered", "contacts_notified": 0}}
+async def emergency_trigger(body: EmergencyBody | None = None, user: dict = Depends(current_user),
+                            db: UserDB = Depends(get_db)):
+    """Alerts the user's emergency contacts by SMS. Never needs the AI model."""
+    now = time.monotonic()
+    last = _sos_last.get(user["id"])
+    if last is not None and now - last < SOS_COOLDOWN_SECONDS:
+        raise ApiError(429, "RATE_LIMITED", "An SOS was just sent. Wait a few seconds, or call 1990 now.")
+    _sos_last[user["id"]] = now
+
+    try:
+        contacts = await db.select("emergency_contacts", "name,phone")
+        profile = await db.select("profiles", "full_name", limit=1)
+    except DBError as e:
+        raise ApiError(502, "AI_UNAVAILABLE", "Could not read your emergency contacts. Call 1990 or your contacts directly.") from e
+
+    name = profile[0].get("full_name") if profile else None
+    report = await notify.send_sos(contacts, notify.build_message(name, body.note if body else None))
+
+    try:  # best effort: the audit table may not allow user inserts
+        await db.insert("audit_log", {"user_id": user["id"], "action": "sos_triggered",
+                                      "detail": {"contacts": report.total, "sent": report.sent, "provider": notify.provider()}})
+    except DBError:
+        pass
+
+    return {"data": {
+        "status": "triggered",
+        "contacts_total": report.total,
+        "contacts_notified": report.sent,
+        "failed": report.failed,
+        "delivered": report.sent > 0,
+        "simulated": report.simulated,
+        "ambulance": "1990",
+    }}

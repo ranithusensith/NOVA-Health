@@ -181,12 +181,28 @@ class ApiClient {
   }
 
   /// POST /api/v1/emergency/trigger → how many contacts were notified.
-  Future<int> triggerEmergency() async {
+  Future<int> triggerEmergency() async => (await triggerEmergencyDetailed()).notified;
+
+  /// Same call, with the details. `delivered` is false when the server only logged the
+  /// alert (no SMS service set up), so the app must open the phone's messages app instead.
+  Future<EmergencyResult> triggerEmergencyDetailed() async {
     if (AppConfig.useMockApi) {
       await Future<void>.delayed(const Duration(milliseconds: 800));
-      return 0;
+      return const EmergencyResult(notified: 0, total: 0, delivered: false);
     }
     final data = await _postJson('/api/v1/emergency/trigger', const {});
-    return (data['contacts_notified'] as num?)?.toInt() ?? 0;
+    return EmergencyResult(
+      notified: (data['contacts_notified'] as num?)?.toInt() ?? 0,
+      total: (data['contacts_total'] as num?)?.toInt() ?? 0,
+      delivered: data['delivered'] == true,
+    );
   }
+}
+
+/// What the server did with an SOS.
+class EmergencyResult {
+  const EmergencyResult({required this.notified, required this.total, required this.delivered});
+  final int notified;
+  final int total;
+  final bool delivered;
 }
