@@ -82,19 +82,39 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
       _failure = null;
     });
     try {
-      final count = await ApiClient.instance.triggerEmergency();
+      final result = await ApiClient.instance.triggerEmergencyDetailed();
       if (!mounted) return;
       setState(() {
         _phase = _SosPhase.sent;
         _sentAt = DateTime.now();
-        _notified = count;
+        _notified = result.notified;
       });
+      // No SMS service on the server: open the phone's own messages app, ready to send.
+      if (!result.delivered) await _smsFallback();
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _phase = _SosPhase.failed;
         _failure = e is ApiException ? e.message : friendlyError(e);
       });
+      // Server unreachable (for example no internet): SMS still works without data.
+      await _smsFallback();
+    }
+  }
+
+  /// Opens the messages app with every emergency contact and the SOS text filled in.
+  Future<void> _smsFallback() async {
+    try {
+      final contacts = await _contacts;
+      final numbers = contacts
+          .map((c) => c.phone.replaceAll(RegExp(r'[^0-9+]'), ''))
+          .where((n) => n.isNotEmpty)
+          .join(',');
+      if (numbers.isEmpty) return;
+      final body = Uri.encodeComponent('NOVA Health SOS: I need help. Please call me or come to me now.');
+      await launchUrl(Uri.parse('sms:$numbers?body=$body'));
+    } catch (_) {
+      // Nothing more to do: the screen already tells the user to call 1990.
     }
   }
 
@@ -229,7 +249,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
         return _SosStatus(
           icon: Icon(CupertinoIcons.checkmark_seal_fill, size: 56, color: c.success),
           title: 'SOS sent',
-          body: '${_notified == 0 ? 'Your request was received' : '$_notified contact${_notified == 1 ? '' : 's'} notified'}'
+          body: '${_notified == 0 ? 'Your SOS was received. Your messages app opened with an alert ready: press Send' : '$_notified contact${_notified == 1 ? '' : 's'} notified'}'
               ' at ${formatClock(_sentAt!)}.\nStay where you are if it is safe.',
           action: NovaButton(
             label: 'I\'m safe now',
