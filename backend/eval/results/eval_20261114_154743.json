@@ -1,0 +1,149 @@
+{
+  "scans": {
+    "rows": [
+      {
+        "task": "prescription",
+        "file": "fake_prescription_1.jpg",
+        "run": 0,
+        "ok": true,
+        "score": {
+          "tp": 1,
+          "fn": 0,
+          "fp": 0,
+          "pairs": 1,
+          "dosage": 1,
+          "frequency": 1,
+          "duration": 1
+        },
+        "seconds": 6.66032712499873
+      },
+      {
+        "task": "prescription",
+        "file": "fake_prescription_2.jpg",
+        "run": 0,
+        "ok": true,
+        "score": {
+          "tp": 2,
+          "fn": 0,
+          "fp": 0,
+          "pairs": 2,
+          "dosage": 2,
+          "frequency": 2,
+          "duration": 2
+        },
+        "seconds": 2.123761667000508
+      },
+      {
+        "task": "report",
+        "file": "fake_lab_report_1.jpg",
+        "run": 0,
+        "ok": true,
+        "score": {
+          "tp": 6,
+          "fn": 0,
+          "fp": 0,
+          "pairs": 6,
+          "value": 6,
+          "unit": 6,
+          "range": 6,
+          "flag": 6
+        },
+        "seconds": 2.752660999998625
+      },
+      {
+        "task": "report",
+        "file": "fake_lab_report_2.jpg",
+        "run": 0,
+        "ok": true,
+        "score": {
+          "tp": 6,
+          "fn": 0,
+          "fp": 0,
+          "pairs": 6,
+          "value": 6,
+          "unit": 6,
+          "range": 6,
+          "flag": 6
+        },
+        "seconds": 2.8311967920017196
+      },
+      {
+        "task": "rejection",
+        "file": "not_a_prescription.jpg -> prescription",
+        "run": 0,
+        "ok": true,
+        "score": {},
+        "seconds": 2.7076183749995835
+      },
+      {
+        "task": "rejection",
+        "file": "not_a_prescription.jpg -> report",
+        "run": 0,
+        "ok": true,
+        "score": {},
+        "seconds": 1.845928750000894
+      },
+      {
+        "task": "rejection",
+        "file": "fake_lab_report_1.jpg -> prescription",
+        "run": 0,
+        "ok": true,
+        "score": {},
+        "seconds": 1.7281398339982843
+      },
+      {
+        "task": "rejection",
+        "file": "fake_prescription_1.jpg -> report",
+        "run": 0,
+        "ok": true,
+        "score": {},
+        "seconds": 3.4552778329998546
+      }
+    ],
+    "summary": {
+      "prescription": {
+        "items_found": "3/3",
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "f1_mean": 1.0,
+        "f1_sd": 0.0,
+        "fields": {
+          "dosage": "100%",
+          "frequency": "100%",
+          "duration": "100%"
+        },
+        "p50_s": 4.392044395999619,
+        "p95_s": 6.433498852098819,
+        "calls": 2
+      },
+      "report": {
+        "items_found": "12/12",
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "f1_mean": 1.0,
+        "f1_sd": 0.0,
+        "fields": {
+          "value": "100%",
+          "unit": "100%",
+          "range": "100%",
+          "flag": "100%"
+        },
+        "p50_s": 2.7919288960001722,
+        "p95_s": 2.8272700024015647,
+        "calls": 2
+      },
+      "rejection": {
+        "correct": "4/4"
+      },
+      "tokens": {
+        "in": 11024,
+        "out": 1456,
+        "calls": 8,
+        "cost_usd": null,
+        "cost_per_scan_usd": null
+      }
+    }
+  }
+}

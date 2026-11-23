@@ -42,6 +42,18 @@ Rule-based parts run offline and are deterministic.
 cd backend && source .venv/bin/activate
 python -m pytest -q
 python -m eval.run_eval --safety
-LLM_MODEL=gemini-3.5-flash-lite python -m eval.run_eval --scans
-LLM_MODEL=gemini-3.5-flash-lite python -m eval.run_eval --agent
+python -m eval.run_eval --mock --all
+python -m eval.run_eval --live-synthetic --scans
+python -m eval.run_eval --live-synthetic --agent
 ```
+
+Scan evaluation requires Tesseract and its English model. Mock mode runs local OCR and
+blocks outbound HTTP. Set `--output-dir` to write reports outside the repository.
+Scan and assistant evaluations use mock mode unless you select `--live-synthetic`.
+
+Live mode is for the built-in synthetic cases and an approved staging evaluation
+account. Export the approved provider and staging Supabase configuration explicitly
+and supply the signed-in account's access token via `NOVA_EVAL_ACCESS_TOKEN`.
+The account must have opted in to the current disclosure. The runner also asks
+you to review and approve each extracted document before sending text to Gemini.
+See [External AI privacy](ai-privacy.md).
