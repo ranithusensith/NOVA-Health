@@ -58,7 +58,9 @@ class UserDB:
         if res.status_code >= 400:
             raise DBError(f"Database error ({res.status_code}).")
         data = res.json()
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            raise DBError("Unexpected database response.")
+        return data
 
     async def insert(self, table: str, rows: dict | list[dict]) -> None:
         headers = {**self._headers(), "Prefer": "return=minimal"}

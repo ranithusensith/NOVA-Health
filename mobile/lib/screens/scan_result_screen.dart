@@ -2,11 +2,11 @@ import 'dart:typed_data';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/health_repository.dart';
 import '../data/sample_data.dart';
 import '../data/scan_models.dart';
+import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/glass.dart';
@@ -25,10 +25,15 @@ class _ScanField {
 /// 04 Scan — prescription result. AI-extracted values are editable and nothing
 /// is saved until the user confirms. Low-confidence fields are amber.
 class ScanResultScreen extends StatefulWidget {
-  const ScanResultScreen({super.key, required this.scan, this.imageBytes});
+  const ScanResultScreen({super.key, required this.scan, this.imageBytes, this.confirmPrescription});
 
   final PrescriptionScan scan;
   final Uint8List? imageBytes;
+  final Future<PrescriptionConfirmation> Function(
+    String scanId,
+    List<Map<String, dynamic>> medications,
+    String? reviewToken,
+  )? confirmPrescription;
 
   @override
   State<ScanResultScreen> createState() => _ScanResultScreenState();
@@ -43,6 +48,16 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   ];
   List<_ScanField> get _fields => [for (final g in _groups) ...g];
   bool _saving = false;
+  late PrescriptionSafetyCheck? _safetyCheck = widget.scan.safetyCheck;
+  String? _reviewToken;
+  String? _confirmationError;
+
+  String get _confirmLabel {
+    if (_saving) return 'Checking…';
+    if (_reviewToken != null) return 'Review warnings';
+    if (_safetyCheck?.completed == false && widget.scan.scanId != null) return 'Retry safety check';
+    return 'Confirm and save';
+  }
 
   /// Fields are amber ("please check") when missing or when the whole scan was low confidence.
   List<_ScanField> _buildFields(ScanMedication m) {
@@ -81,9 +96,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     return ['08:00', '12:00', '16:00', '20:00'];
   }
 
-  Future<void> _save() async {
-    final db = Supabase.instance.client;
-    final uid = db.auth.currentUser!.id;
+  List<Map<String, dynamic>> _medicationDraft() {
     final today = DateTime.now();
     String ymd(DateTime d) => d.toIso8601String().substring(0, 10);
 
@@ -93,59 +106,143 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       final frequency = g[2].controller.text.trim();
       final days = int.tryParse(RegExp(r'\d+').firstMatch(g[3].controller.text)?.group(0) ?? '');
       rows.add({
-        'user_id': uid,
         'name': g[0].controller.text.trim(),
         'dosage': dose.isEmpty ? null : dose,
         'times': _remind ? _timesFor(frequency) : <String>[],
         'start_date': ymd(today),
         'end_date': days == null ? null : ymd(today.add(Duration(days: days))),
-        'source': 'scan',
-        'status': 'confirmed', // the user has just confirmed these values
       });
     }
-    await db.from('medications').insert(rows);
-    HealthRepository.notifyChanged();
+    return rows;
   }
 
   Future<void> _confirm() async {
-    if (_saving) return;
+    final scanId = widget.scan.scanId;
+    if (_saving || scanId == null) return;
     final messenger = ScaffoldMessenger.of(context);
-    if (_groups.any((g) => g[0].controller.text.trim().isEmpty)) {
+    if (_groups.isEmpty || _groups.any((g) => g[0].controller.text.trim().isEmpty)) {
       messenger.showSnackBar(const SnackBar(content: Text('Every medicine needs a name.')));
       return;
     }
-    if (_pending > 0) {
-      final ok = await showCupertinoDialog<bool>(
-        context: context,
-        builder: (ctx) => CupertinoAlertDialog(
-          title: Text('$_pending ${_pending == 1 ? 'field still needs' : 'fields still need'} a check'),
-          content: const Text('Make sure the details match your prescription before saving.'),
-          actions: [
-            CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx, false), child: const Text('Review')),
-            CupertinoDialogAction(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save anyway')),
-          ],
-        ),
-      );
-      if (ok != true || !mounted) return;
-    }
     final navigator = Navigator.of(context);
+    final reviewToken = _reviewToken;
     setState(() => _saving = true);
     try {
-      await _save();
-      final count = _groups.length;
-      final first = _groups.first[0].controller.text.trim();
+      if (reviewToken != null || _pending > 0) {
+        final reviewingWarnings = reviewToken != null;
+        final ok = await showCupertinoDialog<bool>(
+          context: context,
+          builder: (ctx) => CupertinoAlertDialog(
+            title: Text(reviewingWarnings ? 'Review medication warnings' : 'Check prescription details'),
+            content: Text(reviewingWarnings
+                ? _safetyCheck!.warnings.map((warning) => warning.message).join('\n\n')
+                : 'Make sure the details match your prescription before continuing.'),
+            actions: [
+              CupertinoDialogAction(
+                isDefaultAction: true,
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Go back'),
+              ),
+              CupertinoDialogAction(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(reviewingWarnings ? 'Acknowledge and save' : 'Continue to safety check'),
+              ),
+            ],
+          ),
+        );
+        if (ok != true || !mounted) return;
+      }
+
+      final draft = _medicationDraft();
+      final confirm = widget.confirmPrescription ?? ApiClient.instance.confirmPrescription;
+      final result = await confirm(scanId, draft, reviewToken);
+      if (result.activated && result.safetyCheck.completed) HealthRepository.notifyChanged();
+      if (!mounted) return;
+      if (!result.activated || !result.safetyCheck.completed) {
+        setState(() {
+          _safetyCheck = result.safetyCheck;
+          _reviewToken = result.reviewToken;
+          _confirmationError = null;
+        });
+        return;
+      }
+
+      final count = draft.length;
+      final first = draft.first['name'];
       navigator.popUntil((r) => r.isFirst);
       messenger.showSnackBar(SnackBar(
         content: Text(count == 1 ? '$first added to Medications' : '$count medicines added to Medications'),
       ));
     } catch (e) {
-      debugPrint('Saving medications failed: $e');
+      if (!mounted) return;
+      setState(() {
+        _safetyCheck = const PrescriptionSafetyCheck();
+        _reviewToken = null;
+        _confirmationError = e is ApiException ? e.message : 'Check your connection and try again.';
+      });
+    } finally {
       if (mounted) setState(() => _saving = false);
-      messenger.showSnackBar(const SnackBar(content: Text('Could not save. Check your connection and try again.')));
     }
   }
 
+  void _invalidateSafetyCheck() {
+    _safetyCheck = null;
+    _reviewToken = null;
+    _confirmationError = null;
+  }
+
+  Widget _safetyCard(BuildContext context) {
+    final c = context.nova;
+    final check = _safetyCheck;
+    final warnings = check?.warnings ?? const <ScanWarning>[];
+    final unavailable = widget.scan.scanId == null || check?.completed == false;
+    final String title;
+    final String detail;
+    if (unavailable) {
+      title = 'Safety check unavailable';
+      detail = _confirmationError ??
+          (widget.scan.scanId == null
+              ? 'Scan the prescription again with the live service before saving.'
+              : 'NOVA must complete the safety check before saving. Try again.');
+    } else if (warnings.isNotEmpty) {
+      title = 'Medication safety warnings';
+      detail = 'Review these warnings before adding the medicines.';
+    } else if (check == null) {
+      title = 'Safety check required';
+      detail = 'NOVA will check the edited details before saving.';
+    } else {
+      title = 'Prescription safety check';
+      detail = 'No warnings found by NOVA’s scan check. Your final details will be checked before saving.';
+    }
+    return Semantics(
+      liveRegion: true,
+      child: NovaCard(
+        tone: unavailable || warnings.any((warning) => warning.isHigh) ? NovaCardTone.alert : NovaCardTone.tinted,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: NovaType.headline.copyWith(color: c.textPrimary)),
+            const SizedBox(height: 4),
+            Text(detail, style: NovaType.subhead.copyWith(color: c.textSecondary)),
+            for (final warning in warnings)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '${warning.isHigh ? 'High priority' : 'Caution'} · ${warning.message}',
+                  style: NovaType.subhead.copyWith(
+                    color: c.textPrimary,
+                    fontWeight: warning.isHigh ? FontWeight.w600 : null,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _retake() {
+    if (_saving) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(fullscreenDialog: true, builder: (_) => const ScanCameraScreen()),
     );
@@ -199,6 +296,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                   ),
                 ),
                 const SizedBox(height: NovaSpace.gap),
+                _safetyCard(context),
+                const SizedBox(height: NovaSpace.gap),
                 for (var g = 0; g < _groups.length; g++) ...[
                   if (_groups.length > 1)
                     Padding(
@@ -218,9 +317,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                             if (i > 0) Divider(height: 0.5, thickness: 0.5, color: c.separator),
                             _FieldRow(
                               field: _groups[g][i],
-                              onEdited: () {
-                                if (_groups[g][i].needsCheck) setState(() => _groups[g][i].needsCheck = false);
-                              },
+                              readOnly: _saving,
+                              onEdited: () => setState(() {
+                                _groups[g][i].needsCheck = false;
+                                _invalidateSafetyCheck();
+                              }),
                             ),
                           ],
                         ],
@@ -246,7 +347,12 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                         child: CupertinoSwitch(
                           value: _remind,
                           activeTrackColor: c.success,
-                          onChanged: (v) => setState(() => _remind = v),
+                          onChanged: _saving
+                              ? null
+                              : (value) => setState(() {
+                                  _remind = value;
+                                  _invalidateSafetyCheck();
+                                }),
                         ),
                       ),
                     ],
@@ -276,9 +382,12 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  NovaButton(label: _saving ? 'Saving…' : 'Confirm and save', onPressed: _saving ? null : _confirm),
+                  NovaButton(
+                    label: _confirmLabel,
+                    onPressed: _saving || widget.scan.scanId == null ? null : _confirm,
+                  ),
                   const SizedBox(height: 4),
-                  NovaButton(label: 'Retake photo', kind: NovaButtonKind.plain, height: 44, onPressed: _retake),
+                  NovaButton(label: 'Retake photo', kind: NovaButtonKind.plain, height: 44, onPressed: _saving ? null : _retake),
                 ],
               ),
             ),
@@ -290,8 +399,9 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 }
 
 class _FieldRow extends StatelessWidget {
-  const _FieldRow({required this.field, required this.onEdited});
+  const _FieldRow({required this.field, required this.readOnly, required this.onEdited});
   final _ScanField field;
+  final bool readOnly;
   final VoidCallback onEdited;
 
   @override
@@ -323,6 +433,7 @@ class _FieldRow extends StatelessWidget {
                 const SizedBox(height: 2),
                 TextField(
                   controller: field.controller,
+                  readOnly: readOnly,
                   onChanged: (_) => onEdited(),
                   style: NovaType.body.copyWith(color: c.textPrimary),
                   cursorColor: c.primary,

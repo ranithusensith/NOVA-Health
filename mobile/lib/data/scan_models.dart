@@ -38,18 +38,39 @@ class ScanWarning {
       );
 }
 
+class PrescriptionSafetyCheck {
+  const PrescriptionSafetyCheck({this.completed = false, this.warnings = const []});
+
+  final bool completed;
+  final List<ScanWarning> warnings;
+
+  factory PrescriptionSafetyCheck.fromJson(Map<String, dynamic> json) {
+    final warnings = json['warnings'];
+    if (warnings is! List) return const PrescriptionSafetyCheck();
+    return PrescriptionSafetyCheck(
+      completed: json['safety_check_status'] == 'completed',
+      warnings: [
+        for (final warning in warnings)
+          ScanWarning.fromJson((warning as Map).cast<String, dynamic>()),
+      ],
+    );
+  }
+}
+
 class PrescriptionScan {
   const PrescriptionScan({
     required this.medications,
     required this.confidence,
+    this.scanId,
     this.notes,
-    this.warnings = const [],
+    this.safetyCheck = const PrescriptionSafetyCheck(),
   });
 
   final List<ScanMedication> medications;
   final double confidence;
+  final String? scanId;
   final String? notes;
-  final List<ScanWarning> warnings;
+  final PrescriptionSafetyCheck safetyCheck;
 
   factory PrescriptionScan.fromJson(Map<String, dynamic> j) => PrescriptionScan(
         medications: [
@@ -57,12 +78,31 @@ class PrescriptionScan {
             ScanMedication.fromJson((m as Map).cast<String, dynamic>()),
         ],
         confidence: (j['confidence'] as num?)?.toDouble() ?? 0,
+        scanId: j['scan_id'] as String?,
         notes: j['notes'] as String?,
-        warnings: [
-          for (final w in (j['warnings'] as List? ?? const []))
-            ScanWarning.fromJson((w as Map).cast<String, dynamic>()),
-        ],
+        safetyCheck: PrescriptionSafetyCheck.fromJson(j),
       );
+}
+
+class PrescriptionConfirmation {
+  const PrescriptionConfirmation({
+    required this.safetyCheck,
+    required this.activated,
+    this.reviewToken,
+  });
+
+  final PrescriptionSafetyCheck safetyCheck;
+  final bool activated;
+  final String? reviewToken;
+
+  factory PrescriptionConfirmation.fromJson(Map<String, dynamic> json) {
+    final safetyCheck = PrescriptionSafetyCheck.fromJson(json);
+    return PrescriptionConfirmation(
+      safetyCheck: safetyCheck,
+      activated: safetyCheck.completed && json['activated'] == true,
+      reviewToken: safetyCheck.completed ? json['review_token'] as String? : null,
+    );
+  }
 }
 
 class FoodScan {

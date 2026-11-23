@@ -101,6 +101,19 @@ class ApiClient {
     return PrescriptionScan.fromJson(await _sendImage('/api/v1/scan/prescription', file));
   }
 
+  Future<PrescriptionConfirmation> confirmPrescription(
+    String scanId,
+    List<Map<String, dynamic>> medications,
+    String? reviewToken,
+  ) async {
+    final data = await _postJson('/api/v1/scan/prescription/confirm', {
+      'scan_id': scanId,
+      'medications': medications,
+      if (reviewToken != null) 'review_token': reviewToken,
+    });
+    return PrescriptionConfirmation.fromJson(data);
+  }
+
   Future<ReportScan> scanReport(XFile file) async {
     if (AppConfig.useMockApi) {
       await Future<void>.delayed(const Duration(milliseconds: 1400));

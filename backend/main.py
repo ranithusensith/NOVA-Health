@@ -9,11 +9,14 @@ The backend reads the user's data with the user's OWN token (see db.py), so
 row-level security applies and no secret key is needed here.
 """
 
+import hashlib
+import json
 import logging
 import os
 import time
 import uuid
 from datetime import date
+from typing import Annotated
 
 import httpx
 from dotenv import load_dotenv
@@ -21,7 +24,7 @@ from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Reques
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 load_dotenv()
 
@@ -152,16 +155,24 @@ async def read_image(upload: UploadFile) -> tuple[bytes, str]:
     return data, mime
 
 
-async def safety_warnings_for(db, scanned: list[dict]) -> list[dict]:
-    """Runs the medicine rules on scanned medicines plus the ones the user already takes."""
+async def prescription_safety(db: UserDB, proposed: list[dict]) -> dict:
+    """Check a prescription against the signed-in user's current health data."""
     try:
         allergies = (await tools.get_allergies(db, {}))["allergies"]
-        conditions = (await tools.get_profile(db, {})).get("conditions") or []
+        profile = await db.select("profiles", "conditions", filters={"id": f"eq.{db.user_id}"}, limit=1)
+        conditions = profile[0]["conditions"] if profile else None
         existing = (await tools.get_medications(db, {}))["medications"]
-    except Exception:  # noqa: BLE001  (the check is an extra; never block a scan)
-        return []
-    meds = [{"name": m["name"], "dosage": m.get("dosage"), "times": []} for m in scanned] + existing
-    return [{"severity": w.severity, "message": w.message} for w in rules.check_all(meds, allergies, conditions)]
+        if conditions is None:
+            conditions = []
+        if not isinstance(conditions, list):
+            raise ValueError("Invalid conditions")
+        warnings = [
+            {"severity": w.severity, "message": w.message}
+            for w in rules.check_all(proposed + existing, allergies, conditions)
+        ]
+    except Exception:  # noqa: BLE001  (any failed lookup or rule must prevent activation)
+        return {"safety_check_status": "unavailable", "warnings": []}
+    return {"safety_check_status": "completed" if profile else "unavailable", "warnings": warnings}
 
 
 # ---------------------------------------------------------------
@@ -169,6 +180,22 @@ async def safety_warnings_for(db, scanned: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------
 class ChatRequest(BaseModel):
     message: str
+
+
+class PrescriptionMedicationDraft(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+    dosage: Annotated[str, StringConstraints(strip_whitespace=True, max_length=60)] | None = None
+    times: list[Annotated[str, StringConstraints(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]] = Field(
+        max_length=4,
+    )
+    start_date: date
+    end_date: date | None = None
+
+
+class PrescriptionConfirmation(BaseModel):
+    scan_id: uuid.UUID
+    medications: list[PrescriptionMedicationDraft] = Field(min_length=1, max_length=10)
+    review_token: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 # ---------------------------------------------------------------
@@ -250,15 +277,57 @@ async def scan_prescription(
     except llm.LLMError as e:
         raise llm_to_api_error(e)
     meds = [m.model_dump() for m in result.medications]
+    safety_check = await prescription_safety(db, [{**m, "times": []} for m in meds])
     return {"data": {
         "scan_id": str(uuid.uuid4()),
         "is_prescription": True,
         "medications": meds,
-        "warnings": await safety_warnings_for(db, meds),  # allergy and safety rules (fixed, not AI)
+        **safety_check,
         "confidence": result.confidence,
         "notes": result.notes,
         "needs_user_confirmation": True,  # the app must confirm before saving
     }}
+
+
+@app.post("/api/v1/scan/prescription/confirm")
+async def confirm_prescription(body: PrescriptionConfirmation, db: UserDB = Depends(get_db)):
+    """Recheck the final draft and write the checked rows in one batch."""
+    medications = [m.model_dump(mode="json") for m in body.medications]
+    safety_check = await prescription_safety(db, medications)
+    if safety_check["safety_check_status"] != "completed":
+        return {"data": {**safety_check, "activated": False}}
+
+    warnings = safety_check["warnings"]
+    if warnings:
+        # Bind the acknowledgement to this account, the exact draft and the current warnings.
+        review = json.dumps(
+            [db.user_id, str(body.scan_id), medications,
+             sorted(warnings, key=lambda warning: (warning["severity"], warning["message"]))],
+            sort_keys=True,
+        )
+        review_token = hashlib.sha256(review.encode()).hexdigest()
+        if body.review_token != review_token:
+            return {"data": {**safety_check, "activated": False, "review_token": review_token}}
+
+    rows = [
+        {
+            **medication,
+            # The same scan cannot create a duplicate batch if the response is lost.
+            "id": str(uuid.uuid5(body.scan_id, f"nova-prescription:{db.user_id}:{index}")),
+            "user_id": db.user_id,
+            "source": "scan",
+            "status": "confirmed",
+        }
+        for index, medication in enumerate(medications)
+    ]
+    try:
+        await db.insert("medications", rows)
+    except DBError as e:
+        raise ApiError(
+            502, "PRESCRIPTION_SAVE_UNVERIFIED",
+            "Could not verify that the prescription was saved. Check Medications before trying again.",
+        ) from e
+    return {"data": {**safety_check, "activated": True}}
 
 
 @app.post("/api/v1/scan/report")
