@@ -26,14 +26,32 @@ class ApiClient {
     return {'Authorization': 'Bearer $token'};
   }
 
-  Future<Map<String, dynamic>> _sendImage(String path, XFile file) async {
-    final request = http.MultipartRequest('POST', Uri.parse('${AppConfig.apiUrl}$path'))
+  String? get aiAccountId => Supabase.instance.client.auth.currentUser?.id;
+
+  Uri _uri(String path) {
+    final uri = Uri.parse('${AppConfig.apiUrl}$path');
+    if (path.startsWith('/api/v1/assistant/') ||
+        path.startsWith('/api/v1/privacy/') ||
+        (path.startsWith('/api/v1/scan/') && !path.endsWith('/confirm'))) {
+      const release = bool.fromEnvironment('dart.vm.product');
+      const loopback = {'localhost', '127.0.0.1', '::1', '10.0.2.2'};
+      if (uri.scheme != 'https' && (release || uri.scheme != 'http' || !loopback.contains(uri.host))) {
+        throw ApiException('External AI requests require a secure connection to NOVA.');
+      }
+    }
+    return uri;
+  }
+
+  Future<Map<String, dynamic>> _sendImage(String path, XFile file, {bool reviewed = false}) async {
+    final request = http.MultipartRequest('POST', _uri(path))
+      ..followRedirects = false
       ..headers.addAll(_authHeaders)
       ..files.add(http.MultipartFile.fromBytes(
         'image',
         await file.readAsBytes(),
-        filename: file.name,
+        filename: 'scan',
       ));
+    if (reviewed) request.fields['reviewed'] = 'true';
 
     final http.StreamedResponse streamed;
     try {
@@ -57,20 +75,22 @@ class ApiClient {
     throw ApiException(message ?? 'Request failed (${streamed.statusCode}).');
   }
 
-  Future<Map<String, dynamic>> _postJson(
-    String path,
-    Map<String, dynamic> payload, {
+  Future<Map<String, dynamic>> _requestJson(
+    String method,
+    String path, {
+    Map<String, dynamic>? payload,
     Duration timeout = const Duration(seconds: 60),
   }) async {
+    final request = http.Request(method, _uri(path))
+      ..followRedirects = false
+      ..headers.addAll(_authHeaders);
+    if (payload != null) {
+      request.headers['Content-Type'] = 'application/json';
+      request.body = jsonEncode(payload);
+    }
     final http.Response res;
     try {
-      res = await http
-          .post(
-            Uri.parse('${AppConfig.apiUrl}$path'),
-            headers: {..._authHeaders, 'Content-Type': 'application/json'},
-            body: jsonEncode(payload),
-          )
-          .timeout(timeout);
+      res = await request.send().then(http.Response.fromStream).timeout(timeout);
     } catch (_) {
       throw ApiException('Cannot reach the server. Is the backend running?');
     }
@@ -87,11 +107,41 @@ class ApiClient {
     throw ApiException(message ?? 'Request failed (${res.statusCode}).');
   }
 
+  Future<Map<String, dynamic>> _postJson(
+    String path,
+    Map<String, dynamic> payload, {
+    Duration timeout = const Duration(seconds: 60),
+  }) => _requestJson('POST', path, payload: payload, timeout: timeout);
+
+  Future<AiPrivacyStatus> aiPrivacyStatus() async {
+    if (AppConfig.useMockApi) {
+      return const AiPrivacyStatus(enabled: false, providerAvailable: false, version: '');
+    }
+    return AiPrivacyStatus.fromJson(await _getJson('/api/v1/privacy/ai'));
+  }
+
+  Future<void> setAiConsent(bool enabled) async {
+    await _postJson('/api/v1/privacy/ai', {
+      'enabled': enabled,
+      if (enabled) 'disclosure_version': AiPrivacyStatus.disclosureVersion,
+    });
+  }
+
+  Future<int> deleteLegacyAiChats() async {
+    final result = await _requestJson('DELETE', '/api/v1/privacy/ai/chats');
+    return result['deleted'] as int;
+  }
+
+  Future<String> extractMedicalText(XFile file) async {
+    final result = await _sendImage('/api/v1/scan/medical-text', file);
+    return (result['text'] as String?) ?? '';
+  }
+
   // ---------------------------------------------------------------- public API
   // With USE_MOCK_API=true these return sample data, so the UI can be built
   // and tested without the backend or an AI key.
 
-  Future<PrescriptionScan> scanPrescription(XFile file) async {
+  Future<PrescriptionScan> scanPrescription(String reviewedText) async {
     if (AppConfig.useMockApi) {
       await Future<void>.delayed(const Duration(milliseconds: 1400));
       return const PrescriptionScan(
@@ -102,7 +152,7 @@ class ApiClient {
         confidence: 0.9,
       );
     }
-    return PrescriptionScan.fromJson(await _sendImage('/api/v1/scan/prescription', file));
+    return PrescriptionScan.fromJson(await _postJson('/api/v1/scan/prescription', {'text': reviewedText, 'reviewed': true}));
   }
 
   Future<PrescriptionConfirmation> confirmPrescription(
@@ -118,7 +168,7 @@ class ApiClient {
     return PrescriptionConfirmation.fromJson(data);
   }
 
-  Future<ReportScan> scanReport(XFile file) async {
+  Future<ReportScan> scanReport(String reviewedText) async {
     if (AppConfig.useMockApi) {
       await Future<void>.delayed(const Duration(milliseconds: 1400));
       return ReportScan(
@@ -132,7 +182,7 @@ class ApiClient {
         ],
       );
     }
-    return ReportScan.fromJson(await _sendImage('/api/v1/scan/report', file));
+    return ReportScan.fromJson(await _postJson('/api/v1/scan/report', {'text': reviewedText, 'reviewed': true}));
   }
 
   Future<FoodScan> scanFood(XFile file) async {
@@ -147,43 +197,31 @@ class ApiClient {
         confidence: 0.8,
       );
     }
-    return FoodScan.fromJson(await _sendImage('/api/v1/scan/food', file));
+    return FoodScan.fromJson(await _sendImage('/api/v1/scan/food', file, reviewed: true));
   }
 
   /// Sends a message to the AI assistant and returns its reply text.
-  Future<String> chat(String message) async {
+  Future<String> chat(String message, {List<String> healthData = const [], List<String> recentQuestions = const []}) async {
     if (AppConfig.useMockApi) {
       await Future<void>.delayed(const Duration(milliseconds: 900));
       return 'Sample reply: your sleep was short and water was low this week. '
           'Try an earlier bedtime and a glass of water now.\n\nGuidance, not medical advice.';
     }
-    final data = await _postJson('/api/v1/assistant/chat', {'message': message});
+    final data = await _postJson('/api/v1/assistant/chat', {
+      'message': message,
+      'reviewed': true,
+      'health_data': healthData,
+      'recent_questions': recentQuestions,
+    });
     return (data['reply'] as String?) ?? '';
   }
 
-  Future<Map<String, dynamic>> _getJson(String path, {Duration timeout = const Duration(seconds: 60)}) async {
-    final http.Response res;
-    try {
-      res = await http
-          .get(Uri.parse('${AppConfig.apiUrl}$path'), headers: _authHeaders)
-          .timeout(timeout);
-    } catch (_) {
-      throw ApiException('Cannot reach the server. Is the backend running?');
-    }
-    final Map<String, dynamic> json;
-    try {
-      json = jsonDecode(res.body) as Map<String, dynamic>;
-    } catch (_) {
-      throw ApiException('Unexpected server response (${res.statusCode}).');
-    }
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      return (json['data'] as Map).cast<String, dynamic>();
-    }
-    final message = (json['error'] as Map?)?['message'] as String?;
-    throw ApiException(message ?? 'Request failed (${res.statusCode}).');
-  }
+  Future<Map<String, dynamic>> _getJson(
+    String path, {
+    Duration timeout = const Duration(seconds: 60),
+  }) => _requestJson('GET', path, timeout: timeout);
 
-  /// GET /api/v1/reports/daily?date=YYYY-MM-DD → the AI summary text for that day.
+  /// GET /api/v1/reports/daily?date=YYYY-MM-DD → the NOVA summary text for that day.
   Future<String> dailyReport(DateTime day) async {
     final date = '${day.year.toString().padLeft(4, '0')}-'
         '${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
@@ -212,6 +250,24 @@ class ApiClient {
       '/api/v1/emergency/${Uri.encodeComponent(attemptId)}/status', timeout: const Duration(seconds: 10),
     ));
   }
+}
+
+class AiPrivacyStatus {
+  const AiPrivacyStatus({required this.enabled, required this.providerAvailable, required this.version});
+
+  static const disclosureVersion = 'gemini-health-v1';
+  final bool enabled;
+  final bool providerAvailable;
+  final String version;
+
+  bool get canReview => providerAvailable && version == disclosureVersion;
+  bool get allowed => canReview && enabled;
+
+  factory AiPrivacyStatus.fromJson(Map<String, dynamic> json) => AiPrivacyStatus(
+    enabled: json['enabled'] == true,
+    providerAvailable: json['provider_available'] == true,
+    version: (json['disclosure_version'] as String?) ?? '',
+  );
 }
 
 enum SosDeliveryState {

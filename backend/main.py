@@ -18,18 +18,20 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
+from functools import partial
 from typing import Annotated, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import AwareDatetime, BaseModel, Field, StringConstraints, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, StrictBool, StringConstraints, model_validator
 
 load_dotenv()
 
+import ai_privacy  # noqa: E402
 import agent  # noqa: E402  (after load_dotenv so env vars are set)
 import llm  # noqa: E402
 import notify  # noqa: E402
@@ -41,6 +43,10 @@ import tools  # noqa: E402
 from db import DBError, UserDB  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
+# httpx INFO logs include PostgREST URLs with account IDs and health filters.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+privacy_log = logging.getLogger("nova.privacy")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_PUBLISHABLE_KEY = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
@@ -75,6 +81,26 @@ def _error_response(status: int, code: str, message: str) -> JSONResponse:
 @app.exception_handler(ApiError)
 async def api_error_handler(_: Request, exc: ApiError):
     return _error_response(exc.status, exc.code, exc.message)
+
+
+@app.exception_handler(ai_privacy.PrivacyError)
+async def privacy_error_handler(_: Request, exc: ai_privacy.PrivacyError):
+    return _error_response(exc.status, exc.code, str(exc))
+
+
+@app.middleware("http")
+async def private_ai_responses(request: Request, call_next):
+    path = request.url.path
+    private = path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/"))
+    if not private or path.endswith("/confirm"):
+        return await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        privacy_log.error("Private AI route failed unexpectedly")
+        response = _error_response(500, "SERVER_ERROR", "Could not process this request.")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.exception_handler(HTTPException)
@@ -148,7 +174,10 @@ def check_chat_quota(user_id: str) -> None:
 
 
 async def read_image(upload: UploadFile) -> tuple[bytes, str]:
-    data = await upload.read(MAX_IMAGE_BYTES + 1)
+    try:
+        data = await upload.read(MAX_IMAGE_BYTES + 1)
+    finally:
+        await upload.close()
     if len(data) > MAX_IMAGE_BYTES:
         raise ApiError(400, "INVALID_INPUT", "Image is too large (8 MB maximum).")
     mime = scan.detect_image_mime(data)
@@ -182,6 +211,21 @@ async def prescription_safety(db: UserDB, proposed: list[dict]) -> dict:
 # ---------------------------------------------------------------
 class ChatRequest(BaseModel):
     message: str
+    reviewed: StrictBool = False
+    health_data: list[Literal["profile", "medications", "logs", "heart_rate", "cycle", "lab_results"]] = Field(
+        default_factory=list, max_length=6,
+    )
+    recent_questions: list[Annotated[str, StringConstraints(max_length=400)]] = Field(default_factory=list, max_length=4)
+
+
+class AIConsentRequest(BaseModel):
+    enabled: StrictBool
+    disclosure_version: str | None = Field(default=None, max_length=60)
+
+
+class ReviewedMedicalText(BaseModel):
+    text: str = Field(min_length=1, max_length=10_000)
+    reviewed: StrictBool
 
 
 class PrescriptionPlan(BaseModel):
@@ -250,6 +294,53 @@ async def me(user: dict = Depends(current_user)):
     return {"data": {"id": user["id"], "email": user.get("email")}}
 
 
+@app.get("/api/v1/privacy/ai")
+async def ai_consent(db: UserDB = Depends(get_db)):
+    return {"data": {
+        "disclosure_version": ai_privacy.DISCLOSURE_VERSION,
+        "provider_available": ai_privacy.provider_ready(),
+        "enabled": await ai_privacy.has_consent(db),
+    }}
+
+
+@app.post("/api/v1/privacy/ai")
+async def update_ai_consent(body: AIConsentRequest, db: UserDB = Depends(get_db)):
+    if body.enabled:
+        ai_privacy.require_provider()
+        if body.disclosure_version != ai_privacy.DISCLOSURE_VERSION:
+            raise ApiError(409, "AI_DISCLOSURE_OUTDATED", "Update the app to review the current AI disclosure.")
+    try:
+        await db.set_ai_consent(ai_privacy.DISCLOSURE_VERSION if body.enabled else None)
+    except DBError:
+        raise ApiError(503, "AI_PRIVACY_UNAVAILABLE", "AI consent could not be updated. Try again later.") from None
+    return {"data": {"enabled": body.enabled}}
+
+
+@app.delete("/api/v1/privacy/ai/chats")
+async def delete_ai_chats(db: UserDB = Depends(get_db)):
+    try:
+        count = await db.delete_legacy_ai_chats()
+    except DBError:
+        raise ApiError(503, "CHAT_DELETION_UNVERIFIED", "Could not verify older chat deletion. Try again later.") from None
+    return {"data": {"deleted": count}}
+
+
+async def _known_identifiers(user: dict, db: UserDB) -> tuple[str, ...]:
+    metadata = user.get("user_metadata")
+    names = [user.get("email"), user.get("phone"), user.get("id")]
+    if isinstance(metadata, dict):
+        names.extend(metadata.get(key) for key in ("full_name", "name", "display_name"))
+    try:
+        profiles = await db.select("profiles", "full_name", filters={"id": f"eq.{db.user_id}"}, limit=1)
+        if profiles:
+            names.append(profiles[0].get("full_name"))
+    except (DBError, ValueError, AttributeError):
+        raise ai_privacy.PrivacyError(
+            503, "AI_PRIVACY_UNAVAILABLE", "Could not prepare your data for private processing. Try again later.",
+        ) from None
+    return tuple(name for name in names if isinstance(name, str) and 2 <= len(name.strip()) <= 300)
+
+
 @app.post("/api/v1/assistant/chat")
 async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB = Depends(get_db)):
     message = body.message.strip()
@@ -258,27 +349,24 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
     if len(message) > agent.MAX_QUESTION_CHARS:
         raise HTTPException(400, f"message is too long ({agent.MAX_QUESTION_CHARS} characters maximum)")
 
-    # Emergency messages are never blocked by the daily limit.
-    if safety.detect_emergency(message) is None:
+    emergency = safety.detect_emergency(message)
+    if emergency:
+        # Local emergency advice must work without the external provider or consent.
+        result = agent.AgentResult(reply=safety.emergency_reply(emergency), emergency=True)
+    else:
+        await ai_privacy.require_consent(db)
+        if not body.reviewed:
+            raise ApiError(400, "REVIEW_REQUIRED", "Review this question before sharing it with Google Gemini.")
         check_chat_quota(user["id"])
-
-    history: list[dict] = []
-    try:
-        rows = await db.select("chat_messages", "role,content,created_at", order="created_at.desc", limit=6)
-        history = list(reversed(rows))
-    except Exception:  # noqa: BLE001  (no history is fine)
-        pass
-
-    try:
-        result = await agent.run_agent(message, db, history=history)
-    except llm.LLMError as e:
-        raise llm_to_api_error(e)
-
-    try:  # save the conversation for next time (best effort)
-        await db.insert("chat_messages", {"user_id": user["id"], "role": "user", "content": message})
-        await db.insert("chat_messages", {"user_id": user["id"], "role": "assistant", "content": result.reply[:4000]})
-    except Exception:  # noqa: BLE001
-        pass
+        try:
+            result = await agent.run_agent(
+                message, db, history=[{"role": "user", "content": item} for item in body.recent_questions],
+                health_data=set(body.health_data),
+                identifiers=await _known_identifiers(user, db),
+                authorize=partial(ai_privacy.require_consent, db),
+            )
+        except llm.LLMError as e:
+            raise llm_to_api_error(e) from None
 
     return {"data": {
         "reply": result.reply,
@@ -302,18 +390,40 @@ async def daily_report(
     return {"data": data}
 
 
-@app.post("/api/v1/scan/prescription")
-async def scan_prescription(
+@app.post("/api/v1/scan/medical-text")
+async def extract_medical_text(
     image: UploadFile = File(...), user: dict = Depends(current_user), db: UserDB = Depends(get_db),
 ):
-    data, mime = await read_image(image)
+    await ai_privacy.require_consent(db)
+    check_scan_quota(user["id"] + ":ocr")
+    data, _ = await read_image(image)
+    text = await ai_privacy.extract_medical_text(data)
+    return {"data": {"text": safety.clinical_text(text, await _known_identifiers(user, db))[:10_000]}}
+
+
+async def _reviewed_clinical_text(body: ReviewedMedicalText, user: dict, db: UserDB) -> tuple[str, tuple[str, ...]]:
+    await ai_privacy.require_consent(db)
+    if not body.reviewed:
+        raise ApiError(400, "REVIEW_REQUIRED", "Review the text and remove identifying details before sharing it.")
+    identifiers = await _known_identifiers(user, db)
+    text = safety.clinical_text(body.text, identifiers)
+    if not text or not any(char.isalpha() for char in text.replace("[redacted]", "")):
+        raise ApiError(400, "INVALID_INPUT", "Enter the clinical details to scan.")
     check_scan_quota(user["id"])
+    return text, identifiers
+
+
+@app.post("/api/v1/scan/prescription")
+async def scan_prescription(
+    body: ReviewedMedicalText, user: dict = Depends(current_user), db: UserDB = Depends(get_db),
+):
+    text, identifiers = await _reviewed_clinical_text(body, user, db)
     try:
-        result = await scan.scan_prescription(data, mime)
+        result = await scan.scan_prescription(text, identifiers=identifiers, authorize=partial(ai_privacy.require_consent, db))
     except scan.ScanError as e:
-        raise ApiError(422, "SCAN_FAILED", str(e))
+        raise ApiError(422, "SCAN_FAILED", str(e)) from None
     except llm.LLMError as e:
-        raise llm_to_api_error(e)
+        raise llm_to_api_error(e) from None
     meds = [m.model_dump() for m in result.medications]
     safety_check = await prescription_safety(db, [{**m, "times": []} for m in meds])
     return {"data": {
@@ -369,16 +479,16 @@ async def confirm_prescription(body: PrescriptionConfirmation, db: UserDB = Depe
 
 
 @app.post("/api/v1/scan/report")
-async def scan_report(image: UploadFile = File(...), user: dict = Depends(current_user)):
-    """Reads a lab report photo into structured test results (a draft until the user confirms)."""
-    data, mime = await read_image(image)
-    check_scan_quota(user["id"])
+async def scan_report(
+    body: ReviewedMedicalText, user: dict = Depends(current_user), db: UserDB = Depends(get_db),
+):
+    text, identifiers = await _reviewed_clinical_text(body, user, db)
     try:
-        result = await scan.scan_report(data, mime)
+        result = await scan.scan_report(text, identifiers=identifiers, authorize=partial(ai_privacy.require_consent, db))
     except scan.ScanError as e:
-        raise ApiError(422, "SCAN_FAILED", str(e))
+        raise ApiError(422, "SCAN_FAILED", str(e)) from None
     except llm.LLMError as e:
-        raise llm_to_api_error(e)
+        raise llm_to_api_error(e) from None
     return {"data": {
         "scan_id": str(uuid.uuid4()),
         "report_type": result.report_type,
@@ -391,15 +501,21 @@ async def scan_report(image: UploadFile = File(...), user: dict = Depends(curren
 
 
 @app.post("/api/v1/scan/food")
-async def scan_food(image: UploadFile = File(...), user: dict = Depends(current_user)):
-    data, mime = await read_image(image)
+async def scan_food(
+    image: UploadFile = File(...), reviewed: bool = Form(False),
+    user: dict = Depends(current_user), db: UserDB = Depends(get_db),
+):
+    await ai_privacy.require_consent(db)
+    if not reviewed:
+        raise ApiError(400, "REVIEW_REQUIRED", "Review the food photo before sharing it.")
+    data, _ = await read_image(image)
     check_scan_quota(user["id"])
     try:
-        result = await scan.scan_food(data, mime)
+        result = await scan.scan_food(data, authorize=partial(ai_privacy.require_consent, db))
     except scan.ScanError as e:
-        raise ApiError(422, "SCAN_FAILED", str(e))
+        raise ApiError(422, "SCAN_FAILED", str(e)) from None
     except llm.LLMError as e:
-        raise llm_to_api_error(e)
+        raise llm_to_api_error(e) from None
     return {"data": {
         "scan_id": str(uuid.uuid4()),
         "description": result.description,
