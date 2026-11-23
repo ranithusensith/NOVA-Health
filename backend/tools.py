@@ -333,11 +333,11 @@ class ToolSpec:
 
 TOOLS: dict[str, ToolSpec] = {
     "get_profile": ToolSpec(
-        "Age range, sex, blood type, height, weight, BMI, listed medical conditions, goals.",
+        "Age range, sex, blood type, height, weight, BMI and listed medical conditions.",
         "no args", get_profile, "profile"),
     "get_allergies": ToolSpec("The user's listed allergies.", "no args", get_allergies, "allergies"),
     "get_medications": ToolSpec(
-        "Medicines the user currently takes: name, dosage, daily times or exact interval, end date.",
+        "Names and dosages of medicines the user currently takes.",
         "no args", get_medications, "medications"),
     "get_recent_logs": ToolSpec(
         "Daily totals and averages from the user's logs.",
@@ -347,7 +347,7 @@ TOOLS: dict[str, ToolSpec] = {
         "Heart rate summary (latest, average, min, max, resting average).",
         'args: {"days": 1-30 (default 7)}', get_heart_rate, "heart rate"),
     "get_lab_results": ToolSpec(
-        "Lab test results the user saved from scanned reports: value, unit, reference range, low/normal/high flag, date.",
+        "Lab test results the user saved from scanned reports: value, unit, reference range, and low/normal/high flag.",
         "no args", get_lab_results, "lab results"),
     "get_cycle": ToolSpec(
         "Menstrual cycle summary from the user's own period logs.", "no args", get_cycle, "cycle"),
@@ -357,8 +357,11 @@ TOOLS: dict[str, ToolSpec] = {
 }
 
 
-def describe_tools() -> str:
-    return "\n".join(f'- {name}: {t.description} {t.args}' for name, t in TOOLS.items())
+def describe_tools(allowed: frozenset[str] | None = None) -> str:
+    return "\n".join(
+        f"- {name}: {spec.description} {spec.args}"
+        for name, spec in TOOLS.items() if allowed is None or name in allowed
+    )
 
 
 def clean_args(name: str, raw) -> dict:

@@ -4,10 +4,10 @@ Thin Gemini client (REST) that returns parsed JSON.
 All model calls in the backend go through generate_json(), so changing the
 provider later means rewriting this one file.
 
-PRIVACY: free API tiers may use prompts for training. Send fake or minimal
-data only, and never include names or ID numbers in a prompt.
+Provider access requires explicit operator approval and current account consent.
 """
 
+from collections.abc import Awaitable, Callable
 import base64
 import json
 import logging
@@ -16,13 +16,14 @@ import re
 
 import httpx
 
+import ai_privacy
+
 log = logging.getLogger("nova.llm")
 
 # Token counts reported by the provider (read by the evaluation script to estimate cost).
 USAGE: list[dict] = []
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-DEFAULT_MODEL = "gemini-3.5-flash"  # override with LLM_MODEL in .env
 
 
 class LLMError(Exception):
@@ -57,19 +58,21 @@ def parse_json_text(text: str) -> dict:
 async def generate_json(
     prompt: str,
     *,
-    image: bytes | None = None,
-    mime: str = "image/jpeg",
+    food_image: bytes | None = None,
+    authorize: Callable[[], Awaitable[None]] | None = None,
     system: str | None = None,
     retries: int = 1,
 ) -> dict:
+    ai_privacy.require_provider()
+    if authorize is None:
+        raise ai_privacy.PrivacyError(403, "AI_CONSENT_REQUIRED", "Current AI consent is required.")
     api_key = os.environ.get("LLM_API_KEY", "").strip()
-    if not api_key:
-        raise LLMError("AI is not configured on the server.", 503)
-    model = os.environ.get("LLM_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    model = os.environ.get("LLM_MODEL", "").strip()
 
     parts: list[dict] = []
-    if image is not None:
-        parts.append({"inline_data": {"mime_type": mime, "data": base64.b64encode(image).decode()}})
+    if food_image is not None:
+        clean = await ai_privacy.clean_food_image(food_image)
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(clean).decode()}})
     parts.append({"text": prompt})
 
     body: dict = {
@@ -82,23 +85,20 @@ async def generate_json(
     url = f"{BASE_URL}/{model}:generateContent"
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
-    last_error: Exception | None = None
     for _ in range(retries + 1):
+        await authorize()
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0), trust_env=False) as client:
                 res = await client.post(url, headers=headers, json=body)
-        except httpx.HTTPError as e:
-            log.warning("LLM network error: %s", type(e).__name__)
-            raise LLMError("Could not reach the AI service.", 502) from e
+        except httpx.HTTPError:
+            log.warning("LLM network error")
+            raise LLMError("Could not reach the AI service.", 502) from None
 
         if res.status_code == 429:
             raise LLMError("The AI service is busy. Try again in a minute.", 429)
-        if res.status_code in (400, 401, 403, 404):
-            log.error("LLM rejected request (%s): %s", res.status_code, res.text[:300])
-            raise LLMError("The AI service rejected the request. Check LLM_API_KEY and LLM_MODEL.", 502)
-        if res.status_code >= 400:
-            log.error("LLM error %s: %s", res.status_code, res.text[:300])
-            raise LLMError(f"AI service error ({res.status_code}).", 502)
+        if not 200 <= res.status_code < 300:
+            log.warning("LLM request failed (HTTP %d)", res.status_code)
+            raise LLMError("The AI service could not process the request.", 502)
 
         try:
             payload = res.json()
@@ -110,8 +110,7 @@ async def generate_json(
                 })
                 del USAGE[:-2000]
             return parse_json_text(_extract_text(payload))
-        except ValueError as e:
-            last_error = e
-            log.warning("LLM returned unreadable output: %s", e)
+        except (ValueError, TypeError, AttributeError):
+            log.warning("LLM returned unreadable output")
 
-    raise LLMError("The AI returned an unreadable answer. Try again.", 502) from last_error
+    raise LLMError("The AI returned an unreadable answer. Try again.", 502)

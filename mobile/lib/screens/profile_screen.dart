@@ -12,6 +12,7 @@ import '../widgets/content.dart';
 import '../widgets/pressable.dart';
 import '../widgets/scroll_edge_fade.dart';
 import '../widgets/states.dart';
+import 'ai_privacy_screen.dart';
 import 'cycle_screen.dart';
 import 'emergency_screen.dart';
 import 'health_profile_screen.dart';
@@ -51,8 +52,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _allergyCount = allergies.length;
         if (profile.fullName.isNotEmpty) _name = profile.fullName;
       });
-    } catch (e) {
-      debugPrint('Could not load health profile: $e');
+    } catch (_) {
+      debugPrint('Could not load health profile.');
     }
   }
 
@@ -64,8 +65,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final fromProfile = await CareRepository.instance.fullName();
       if (mounted && fromProfile.isNotEmpty) setState(() => _name = fromProfile);
-    } catch (e) {
-      debugPrint('Could not load profile name: $e');
+    } catch (_) {
+      debugPrint('Could not load profile name.');
     }
   }
 
@@ -350,15 +351,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 _NavRow(
                   icon: CupertinoIcons.lock_shield,
                   title: 'Privacy and consent',
-                  onTap: () => _showText(
-                    'Privacy and consent',
-                    'Your health data is stored in your own NOVA account and protected by row-level security, '
-                        'so only you can read or change it.\n\n'
-                        'Photos you scan are sent to the NOVA server only to read the prescription or meal. Nothing is '
-                        'saved until you check and confirm the details.\n\n'
-                        'The assistant and daily report use your recent sleep, water, mood and medication logs to '
-                        'personalise their guidance.\n\n'
-                        'You can delete any entry, stop a medicine or sign out at any time.',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AiPrivacyScreen()),
                   ),
                 ),
                 _NavRow(

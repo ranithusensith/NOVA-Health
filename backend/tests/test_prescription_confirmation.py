@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import ai_privacy
 import main
 import scan
 import tools
@@ -68,12 +69,16 @@ def draft():
 
 @pytest.mark.parametrize("outcome", ["clear", "warning", "unavailable"])
 def test_scan_preview_reports_safety_outcome_without_saving(client, db, monkeypatch, outcome):
-    async def fake_scan(*args):
+    async def fake_scan(*args, **kwargs):
         return scan.PrescriptionResult(
             is_prescription=True, medications=[scan.Medication(name="Amoxicillin")], confidence=0.9,
         )
 
     monkeypatch.setattr(scan, "scan_prescription", fake_scan)
+    monkeypatch.setenv("AI_PRIVACY_PROVIDER_APPROVAL", "gemini-reviewed-paid")
+    monkeypatch.setenv("LLM_API_KEY", "synthetic-test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini-fixture")
+    db.tables["ai_processing_consents"] = [{"disclosure_version": ai_privacy.DISCLOSURE_VERSION}]
     if outcome == "warning":
         db.tables["allergies"] = [{"name": "Penicillin"}]
     if outcome == "unavailable":
@@ -81,7 +86,7 @@ def test_scan_preview_reports_safety_outcome_without_saving(client, db, monkeypa
 
     response = client.post(
         "/api/v1/scan/prescription",
-        files={"image": ("fixture.jpg", b"\xff\xd8\xff\x00", "image/jpeg")},
+        json={"text": "Amoxicillin", "reviewed": True},
     )
     assert response.status_code == 200
     data = response.json()["data"]

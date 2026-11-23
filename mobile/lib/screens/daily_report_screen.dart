@@ -20,7 +20,7 @@ void openDailyReport(BuildContext context) {
   Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DailyReportScreen()));
 }
 
-/// 07 Daily report — AI summary for one day (GET /api/v1/reports/daily) plus
+/// 07 Daily report — NOVA summary for one day (GET /api/v1/reports/daily) plus
 /// that day's tracked numbers, with a date switcher.
 class DailyReportScreen extends StatefulWidget {
   const DailyReportScreen({super.key, this.initialDate});
@@ -253,7 +253,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
               Text(
                 data.summaryError == null
                     ? 'No summary for this day yet.'
-                    : 'The AI summary is not available right now (${data.summaryError}). Your numbers below are still up to date.',
+                    : 'The summary is not available right now (${data.summaryError}). Your numbers below are still up to date.',
                 style: NovaType.subhead.copyWith(color: c.textSecondary),
               ),
             const SizedBox(height: 8),

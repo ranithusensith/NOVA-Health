@@ -1,13 +1,14 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
+import '../config.dart';
 import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/floating_tab_bar.dart';
 import '../widgets/glass.dart';
 import '../widgets/pressable.dart';
-import '../widgets/states.dart';
+import 'ai_privacy_screen.dart';
 
 enum ChatKind { user, ai, error, typing }
 
@@ -54,35 +55,50 @@ class _AssistantScreenState extends State<AssistantScreen> {
     super.dispose();
   }
 
-  Future<void> _ask(String question) async {
-    final conversation = _conversation;
-    ChatItem reply;
-    try {
-      final text = await ApiClient.instance.chat(question);
-      reply = text.trim().isEmpty ? ChatItem.error('No reply came back. Please try again.') : ChatItem.ai(text.trim());
-    } on ApiException catch (e) {
-      reply = ChatItem.error(e.message);
-    } catch (e) {
-      reply = ChatItem.error(friendlyError(e));
-    }
-    if (!mounted || conversation != _conversation) return;
-    setState(() {
-      _waiting = false;
-      _items = [..._items.where((i) => i.kind != ChatKind.typing), reply];
-    });
-    _scrollToEnd();
-  }
-
-  void _send(String raw) {
+  Future<void> _send(String raw) async {
     final text = raw.trim();
     if (text.isEmpty || _waiting) return;
-    _input.clear();
-    setState(() {
-      _waiting = true;
-      _items = [..._items.where((i) => i.kind != ChatKind.typing), ChatItem.user(text), ChatItem.typing];
-    });
-    _scrollToEnd();
-    _ask(text);
+    final conversation = _conversation;
+    final api = ApiClient.instance;
+    final owner = AppConfig.useMockApi ? null : api.aiAccountId;
+    bool current() => mounted && conversation == _conversation &&
+        (AppConfig.useMockApi || api.aiAccountId == owner);
+    setState(() => _waiting = true);
+    ChatItem? reply;
+    try {
+      if (!await ensureAiConsent(context) || !mounted || !current()) return;
+      final sharing = AppConfig.useMockApi ? const AiChatShare() : await showDialog<AiChatShare>(
+        context: context,
+        builder: (_) => const AiChatReview(),
+      );
+      if (sharing == null || !current()) return;
+      final previous = _items.where((item) => item.kind == ChatKind.user).toList();
+      final recent = sharing.includeEarlierQuestions
+          ? previous.skip(previous.length > 4 ? previous.length - 4 : 0)
+              .map((item) => String.fromCharCodes(item.text.runes.take(400))).toList()
+          : <String>[];
+      _input.clear();
+      setState(() {
+        _items = [..._items, ChatItem.user(text), ChatItem.typing];
+      });
+      _scrollToEnd();
+      final response = await api.chat(text, healthData: sharing.healthData, recentQuestions: recent);
+      reply = response.trim().isEmpty
+          ? ChatItem.error('No reply came back. Please try again.')
+          : ChatItem.ai(response.trim());
+    } on ApiException catch (e) {
+      reply = ChatItem.error(e.message);
+    } catch (_) {
+      reply = ChatItem.error('Could not process this question. Please try again.');
+    } finally {
+      if (current()) {
+        setState(() {
+          _waiting = false;
+          _items = [..._items.where((item) => item.kind != ChatKind.typing), if (reply != null) reply];
+        });
+        if (reply != null) _scrollToEnd();
+      }
+    }
   }
 
   void _reset() {
@@ -128,6 +144,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
                       Semantics(header: true, child: Text('Assistant', style: NovaType.largeTitle.copyWith(color: c.textPrimary))),
                       const SizedBox(height: 2),
                       const DisclaimerNote(icon: true),
+                      Text('Questions you share are processed by Google Gemini.',
+                          style: NovaType.caption.copyWith(color: c.textSecondary)),
                     ],
                   ),
                 );
@@ -204,6 +222,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
                       controller: _input,
                       focusNode: _focus,
                       textInputAction: TextInputAction.send,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      enableIMEPersonalizedLearning: false,
                       onSubmitted: _send,
                       style: NovaType.body.copyWith(color: c.textPrimary),
                       cursorColor: c.primary,

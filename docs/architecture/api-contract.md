@@ -134,9 +134,10 @@ Query: `?page=1&limit=20`
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/scan/prescription` | Upload prescription image, return structured data |
-| POST | `/scan/report` | Upload medical report image, return structured data |
-| POST | `/scan/food` | Upload food image, return nutrition estimate |
+| POST | `/scan/medical-text` | Extract text from a medical photo inside NOVA for user review |
+| POST | `/scan/prescription` | Send reviewed clinical text for a prescription draft |
+| POST | `/scan/report` | Send reviewed clinical text for a lab-result draft |
+| POST | `/scan/food` | Send a reviewed food photo, re-encoded by NOVA, for a nutrition estimate |
 
 ### 5.6 Wearables
 
@@ -155,8 +156,11 @@ Query: `?page=1&limit=20`
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/assistant/chat` | Send a message to the health assistant |
-| GET | `/reports/daily?date=` | Get daily health report |
+| POST | `/assistant/chat` | Send a reviewed question to Gemini after opt-in |
+| GET | `/privacy/ai` | Read provider availability, disclosure version and current account consent |
+| POST | `/privacy/ai` | Enable with the current disclosure version, or revoke consent |
+| DELETE | `/privacy/ai/chats` | Delete the signed-in account’s legacy NOVA chat rows |
+| GET | `/reports/daily?date=` | Get the report computed and written inside NOVA |
 | GET | `/insights?range=week` | Get long-term insights |
 
 ### 5.9 Notifications and Emergency
@@ -283,10 +287,14 @@ Response `201`:
 
 ```
 POST /api/v1/scan/prescription
-Content-Type: multipart/form-data
+Content-Type: application/json
 ```
 
-Request: form field `image` (JPEG or PNG, max 10 MB).
+Request: `{"text":"Sample medicine 500 mg twice daily","reviewed":true}`.
+Prescription and lab report text may first be extracted with `POST /api/v1/scan/medical-text`
+and multipart form field `image` (JPEG, PNG or WebP, max 8 MB). The OCR endpoint
+does not call Gemini. Reviewed food uploads use multipart fields `image` and `reviewed=true`.
+External AI requires current account consent and approved provider configuration.
 
 Response `200`:
 
@@ -319,7 +327,12 @@ POST /api/v1/assistant/chat
 Request:
 
 ```json
-{ "message": "Why have I been tired this week?" }
+{
+  "message": "Why have I been tired this week?",
+  "reviewed": true,
+  "health_data": ["logs"],
+  "recent_questions": []
+}
 ```
 
 Response `200`:
