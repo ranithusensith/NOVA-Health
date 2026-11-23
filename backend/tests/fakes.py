@@ -21,6 +21,20 @@ class FakeDB:
         self.inserted.append((table, rows))
 
 
+def enable_test_ai(monkeypatch, db):
+    """Use a synthetic account with up-to-date disclosure and synthetic configuration."""
+    import ai_privacy
+
+    db.tables["ai_processing_consents"] = [{"disclosure_version": ai_privacy.DISCLOSURE_VERSION}]
+    monkeypatch.setenv("AI_PRIVACY_PROVIDER_APPROVAL", "gemini-reviewed-paid")
+    monkeypatch.setenv("LLM_API_KEY", "synthetic-test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini-fixture")
+
+
+def post_reviewed_text(client, kind, text):
+    return client.post(f"/api/v1/scan/{kind}", json={"text": text, "reviewed": True})
+
+
 def script_llm(monkeypatch, steps: list, prompts: list | None = None):
     """Make llm.generate_json return the given steps in order (an Exception item is raised)."""
     import llm

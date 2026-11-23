@@ -158,7 +158,13 @@ def check_paracetamol_limit(meds: list[dict]) -> list[Warning]:
         if "paracetamol" not in families_of(m.get("name", "")):
             continue
         mg = parse_mg(m.get("dosage"))
-        per_day = len(m.get("times") or [])
+        plan = m.get("prescription_plan") or {}
+        if plan.get("kind") == "interval":
+            interval = plan["interval_minutes"]
+            # Maximum number of occurrences in a rolling 24-hour window.
+            per_day = 1 + (24 * 60 - 1) // interval
+        else:
+            per_day = len(m.get("times") or [])
         if mg and per_day:
             total += mg * per_day
             names.append(m.get("name", "paracetamol"))

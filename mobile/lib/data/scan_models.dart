@@ -5,6 +5,7 @@ class ScanMedication {
     this.dosage,
     this.frequency,
     this.durationDays,
+    this.durationText,
     this.instructions,
   });
 
@@ -12,6 +13,7 @@ class ScanMedication {
   final String? dosage;
   final String? frequency;
   final int? durationDays;
+  final String? durationText;
   final String? instructions;
 
   factory ScanMedication.fromJson(Map<String, dynamic> j) => ScanMedication(
@@ -19,8 +21,20 @@ class ScanMedication {
         dosage: j['dosage'] as String?,
         frequency: j['frequency'] as String?,
         durationDays: (j['duration_days'] as num?)?.toInt(),
+        durationText: j['duration_text'] as String?,
         instructions: j['instructions'] as String?,
       );
+
+  /// A date suggestion is available only for a single, explicit number of days.
+  int? get suggestedCourseDays {
+    final match = RegExp(r'^(?:for\s+)?([0-9]{1,3})\s+days?\.?$', caseSensitive: false)
+        .firstMatch(durationText?.trim() ?? '');
+    final days = int.tryParse(match?.group(1) ?? '');
+    return days != null && days >= 1 && days <= 365 ? days : null;
+  }
+
+  bool get mentionsAsNeeded => RegExp(r'\b(?:p\s*\.?\s*r\s*\.?\s*n|as needed|when needed|as required)\b', caseSensitive: false)
+      .hasMatch('${frequency ?? ''} ${instructions ?? ''}');
 }
 
 /// A safety note from the backend's fixed medicine rules (allergy conflicts and so on).
@@ -38,18 +52,39 @@ class ScanWarning {
       );
 }
 
+class PrescriptionSafetyCheck {
+  const PrescriptionSafetyCheck({this.completed = false, this.warnings = const []});
+
+  final bool completed;
+  final List<ScanWarning> warnings;
+
+  factory PrescriptionSafetyCheck.fromJson(Map<String, dynamic> json) {
+    final warnings = json['warnings'];
+    if (warnings is! List) return const PrescriptionSafetyCheck();
+    return PrescriptionSafetyCheck(
+      completed: json['safety_check_status'] == 'completed',
+      warnings: [
+        for (final warning in warnings)
+          ScanWarning.fromJson((warning as Map).cast<String, dynamic>()),
+      ],
+    );
+  }
+}
+
 class PrescriptionScan {
   const PrescriptionScan({
     required this.medications,
     required this.confidence,
+    this.scanId,
     this.notes,
-    this.warnings = const [],
+    this.safetyCheck = const PrescriptionSafetyCheck(),
   });
 
   final List<ScanMedication> medications;
   final double confidence;
+  final String? scanId;
   final String? notes;
-  final List<ScanWarning> warnings;
+  final PrescriptionSafetyCheck safetyCheck;
 
   factory PrescriptionScan.fromJson(Map<String, dynamic> j) => PrescriptionScan(
         medications: [
@@ -57,12 +92,31 @@ class PrescriptionScan {
             ScanMedication.fromJson((m as Map).cast<String, dynamic>()),
         ],
         confidence: (j['confidence'] as num?)?.toDouble() ?? 0,
+        scanId: j['scan_id'] as String?,
         notes: j['notes'] as String?,
-        warnings: [
-          for (final w in (j['warnings'] as List? ?? const []))
-            ScanWarning.fromJson((w as Map).cast<String, dynamic>()),
-        ],
+        safetyCheck: PrescriptionSafetyCheck.fromJson(j),
       );
+}
+
+class PrescriptionConfirmation {
+  const PrescriptionConfirmation({
+    required this.safetyCheck,
+    required this.activated,
+    this.reviewToken,
+  });
+
+  final PrescriptionSafetyCheck safetyCheck;
+  final bool activated;
+  final String? reviewToken;
+
+  factory PrescriptionConfirmation.fromJson(Map<String, dynamic> json) {
+    final safetyCheck = PrescriptionSafetyCheck.fromJson(json);
+    return PrescriptionConfirmation(
+      safetyCheck: safetyCheck,
+      activated: safetyCheck.completed && json['activated'] == true,
+      reviewToken: safetyCheck.completed ? json['review_token'] as String? : null,
+    );
+  }
 }
 
 class FoodScan {

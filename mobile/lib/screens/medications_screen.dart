@@ -183,7 +183,7 @@ class _MedicationsScreenState extends State<MedicationsScreen> {
 
     return [
       Text(
-        data.schedule.isEmpty ? 'No doses with a reminder today' : '$taken of ${data.schedule.length} doses taken today',
+        data.schedule.isEmpty ? 'No scheduled doses today' : '$taken of ${data.schedule.length} doses taken today',
         style: NovaType.subhead.copyWith(color: c.textSecondary),
       ),
       if (missed > 0) ...[
@@ -323,8 +323,11 @@ class _MedicineRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.nova;
+    final plan = med.prescriptionPlan;
     final times = med.times.isEmpty
-        ? 'No reminder'
+        ? (plan?.timing == PrescriptionTiming.interval
+            ? plan!.intervalLabel
+            : plan?.timing.label ?? 'No fixed schedule')
         : med.times.map((t) {
             final p = parseClock(t)!;
             return formatClock(DateTime(2000, 1, 1, p.hour, p.minute));
@@ -345,6 +348,8 @@ class _MedicineRow extends StatelessWidget {
                 children: [
                   Text(med.label, style: NovaType.headline.copyWith(color: c.textPrimary)),
                   Text('$times$until', style: NovaType.footnote.copyWith(color: c.textSecondary)),
+                  if (plan?.instructions != null)
+                    Text(plan!.instructions!, style: NovaType.footnote.copyWith(color: c.textSecondary)),
                 ],
               ),
             ),
@@ -384,7 +389,12 @@ class _MedicationEditorState extends State<_MedicationEditor> {
   late List<String> _times = [...?widget.existing?.times];
   late DateTime _start = widget.existing?.startDate ?? DateTime.now();
   late DateTime? _end = widget.existing?.endDate;
-  late bool _remind = widget.existing == null || (widget.existing!.times.isNotEmpty);
+  PrescriptionPlan? get _plan => widget.existing?.prescriptionPlan;
+  bool get _separateNotifications => _plan != null || widget.existing?.source == 'scan';
+  late bool _remind = _separateNotifications
+      ? widget.existing!.remindersEnabled && (_plan != null || _times.isNotEmpty)
+      : widget.existing == null || _times.isNotEmpty;
+  bool get _showTimes => _plan == null ? _separateNotifications || _remind : _plan!.timing == PrescriptionTiming.daily;
   bool _saving = false;
   String? _error;
 
@@ -393,7 +403,7 @@ class _MedicationEditorState extends State<_MedicationEditor> {
   @override
   void initState() {
     super.initState();
-    if (_times.isEmpty && _remind) _times = ['08:00'];
+    if (!_separateNotifications && _times.isEmpty && _remind) _times = ['08:00'];
   }
 
   @override
@@ -413,13 +423,18 @@ class _MedicationEditorState extends State<_MedicationEditor> {
 
   Future<void> _pickDate({required bool end}) async {
     final now = DateTime.now();
+    final defaultEnd = _separateNotifications ? _start : _start.add(const Duration(days: 7));
+    final proposedEnd = _end ?? defaultEnd;
+    final initial = end && !proposedEnd.isBefore(_start) ? proposedEnd : _start;
+    final earliest = end ? _start : DateTime(now.year - 1);
+    final latest = DateTime(now.year + 3);
     final picked = await showDatePicker(
       context: context,
-      initialDate: end ? (_end ?? _start.add(const Duration(days: 7))) : _start,
-      firstDate: end ? _start : DateTime(now.year - 1),
-      lastDate: DateTime(now.year + 3),
+      initialDate: initial,
+      firstDate: initial.isBefore(earliest) ? initial : earliest,
+      lastDate: initial.isAfter(latest) ? initial : latest,
     );
-    if (picked == null) return;
+    if (picked == null || !mounted) return;
     setState(() {
       if (end) {
         _end = picked;
@@ -436,8 +451,10 @@ class _MedicationEditorState extends State<_MedicationEditor> {
       setState(() => _error = 'Give the medicine a name.');
       return;
     }
-    if (_remind && _times.isEmpty) {
-      setState(() => _error = 'Add at least one reminder time, or turn reminders off.');
+    if ((_plan?.timing == PrescriptionTiming.daily || (_plan == null && _remind)) && _times.isEmpty) {
+      setState(() => _error = !_separateNotifications
+          ? 'Add at least one reminder time, or turn reminders off.'
+          : 'Choose at least one daily dose time for this schedule.');
       return;
     }
     setState(() {
@@ -447,10 +464,11 @@ class _MedicationEditorState extends State<_MedicationEditor> {
     final navigator = Navigator.of(context);
     try {
       final repo = CareRepository.instance;
-      final times = _remind ? _times : <String>[];
+      final times = _showTimes ? _times : <String>[];
       if (_isEdit) {
         await repo.updateMedication(widget.existing!.id,
-            name: name, dosage: _dose.text.trim(), times: times, startDate: _start, endDate: _end);
+            name: name, dosage: _dose.text.trim(), times: times, startDate: _start, endDate: _end,
+            remindersEnabled: _separateNotifications ? _remind : null);
       } else {
         await repo.addMedication(name: name, dosage: _dose.text.trim(), times: times, startDate: _start, endDate: _end);
       }
@@ -501,6 +519,8 @@ class _MedicationEditorState extends State<_MedicationEditor> {
     final c = context.nova;
     final keyboard = MediaQuery.viewInsetsOf(context).bottom;
     final fieldStyle = NovaType.body.copyWith(color: c.textPrimary);
+    final plan = _plan;
+    final firstDose = plan?.firstDoseAt?.toLocal();
     return Padding(
       padding: EdgeInsets.fromLTRB(8, 0, 8, keyboard + 8),
       child: Glass(
@@ -535,7 +555,18 @@ class _MedicationEditorState extends State<_MedicationEditor> {
                 decoration: novaFieldDecoration(c, 'Dose (e.g. 10 mg, 1 tablet)', icon: CupertinoIcons.plus_circle),
               ),
               const SizedBox(height: 16),
-              Row(
+              if (plan != null) ...[
+                Text('Scanned directions', style: NovaType.headline.copyWith(color: c.textPrimary)),
+                for (final text in [plan.dosageText, plan.frequency, plan.instructions, plan.durationText].whereType<String>())
+                  Text(text, style: NovaType.subhead.copyWith(color: c.textSecondary)),
+                if (plan.timing == PrescriptionTiming.interval && firstDose != null)
+                  Text(
+                    '${plan.intervalLabel} · First dose ${_date(firstDose)} at ${formatClock(firstDose)}',
+                    style: NovaType.subhead.copyWith(color: c.textSecondary),
+                  ),
+                const SizedBox(height: 12),
+              ],
+              if (plan?.timing.isScheduled != false) Row(
                 children: [
                   Expanded(child: Text('Reminders', style: NovaType.headline.copyWith(color: c.textPrimary))),
                   Semantics(
@@ -545,13 +576,13 @@ class _MedicationEditorState extends State<_MedicationEditor> {
                       activeTrackColor: c.success,
                       onChanged: (v) => setState(() {
                         _remind = v;
-                        if (v && _times.isEmpty) _times = ['08:00'];
+                        if (!_separateNotifications && v && _times.isEmpty) _times = ['08:00'];
                       }),
                     ),
                   ),
                 ],
               ),
-              if (_remind) ...[
+              if (_showTimes) ...[
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 8,
@@ -583,7 +614,11 @@ class _MedicationEditorState extends State<_MedicationEditor> {
               Row(
                 children: [
                   Expanded(
-                    child: _DateField(label: 'Starts', value: _date(_start), onTap: () => _pickDate(end: false)),
+                    child: _DateField(
+                      label: 'Starts',
+                      value: _date(_start),
+                      onTap: plan?.timing == PrescriptionTiming.interval ? null : () => _pickDate(end: false),
+                    ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -639,7 +674,7 @@ class _DateField extends StatelessWidget {
   const _DateField({required this.label, required this.value, required this.onTap, this.onClear});
   final String label;
   final String value;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final VoidCallback? onClear;
 
   @override

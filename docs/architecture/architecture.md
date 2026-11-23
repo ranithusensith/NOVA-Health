@@ -60,27 +60,27 @@ flowchart TD
 
 1. The mobile app talks only to the Backend API.
 2. The Backend API talks to the AI engine, the database, the weather API, and the push service.
-3. The AI engine reads and writes health data through the backend's data layer, never straight from the app.
+3. Gemini receives only approved payloads built by the NOVA backend. It does not access the app or database directly.
 4. Wearable data flows: watch → phone → app → API. HealthKit and Samsung Health are read on-device only.
 
 ## 5. Main Data Flows
 
 ### 5.1 Prescription scan
 
-1. User photographs a prescription in the app.
-2. App uploads the image to `POST /api/v1/scan/prescription`.
-3. Backend validates and forwards it to the AI engine.
-4. AI engine runs OCR and a vision model, then returns structured medication data.
-5. Backend saves the data and creates reminders.
-6. App shows the result for the user to confirm.
+1. The user can opt in to the current external AI disclosure and take a photo.
+2. The app uploads the photo to the NOVA OCR endpoint for local text extraction and redaction.
+3. The user reviews the proposed text, corrects it and removes any remaining identifiers.
+4. The backend sends only reviewed, redacted clinical text to Gemini for a draft.
+5. NOVA runs its prescription safety rules. The app requires schedule and warning confirmation before activation.
+
+Lab report scans use the same text-review path. Food scans use a separately reviewed,
+re-encoded photo. See [External AI privacy](../ai-privacy.md).
 
 ### 5.2 Daily health report
 
-1. A scheduled job runs in the backend each day.
-2. Backend collects the day's data (food, water, sleep, mood, symptoms, wearables, weather).
-3. AI engine reasons across the data and writes the report.
-4. Backend stores the report and sends a push notification.
-5. App displays the report.
+1. The app requests a date from the NOVA backend.
+2. The backend summarizes the account’s selected health records with fixed rules.
+3. The app displays the report. This flow does not use Gemini.
 
 ### 5.3 Emergency assistance
 

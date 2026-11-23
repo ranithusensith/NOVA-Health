@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'care_models.dart';
 import 'sample_data.dart';
 
 class _Dose {
@@ -63,7 +64,7 @@ class HealthRepository {
 
     final meds = await _db
         .from('medications')
-        .select('name,dosage,times,start_date,end_date')
+        .select('name,dosage,times,start_date,end_date,prescription_plan')
         .eq('user_id', _uid)
         .eq('status', 'confirmed');
 
@@ -79,21 +80,9 @@ class HealthRepository {
     // ---- medication doses scheduled for today
     final doses = <_Dose>[];
     for (final m in meds) {
-      final start = DateTime.tryParse((m['start_date'] as String?) ?? '');
-      final end = DateTime.tryParse((m['end_date'] as String?) ?? '');
-      if (start != null && start.isAfter(today)) continue;
-      if (end != null && end.isBefore(today)) continue;
-      for (final t in (m['times'] as List? ?? const [])) {
-        final parts = (t as String).split(':');
-        if (parts.length != 2) continue;
-        final h = int.tryParse(parts[0]);
-        final min = int.tryParse(parts[1]);
-        if (h == null || min == null) continue;
-        doses.add(_Dose(
-          m['name'] as String,
-          (m['dosage'] as String?) ?? '',
-          DateTime(now.year, now.month, now.day, h, min),
-        ));
+      final medicine = MedicationRecord.fromJson(m);
+      for (final at in medicine.dosesOn(today)) {
+        doses.add(_Dose(medicine.name, medicine.dosage ?? '', at));
       }
     }
     doses.sort((a, b) => a.at.compareTo(b.at));
@@ -107,7 +96,7 @@ class HealthRepository {
       next = Medication(
         name: meds.first['name'] as String,
         dose: (meds.first['dosage'] as String?) ?? '',
-        time: 'no reminder set',
+        time: 'no dose time set',
       );
     }
 

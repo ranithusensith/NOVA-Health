@@ -8,9 +8,9 @@ import llm
 import main
 import scan
 import tools
-from fakes import FakeDB, script_llm
+from fakes import FakeDB, enable_test_ai, post_reviewed_text, script_llm
 
-JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
+REPORT_TEXT = "WBC 7400 /uL reference 4000 - 11000"
 
 
 # ------------------------------------------------------------ parsing and flags
@@ -52,7 +52,7 @@ def test_parse_report_cleans_messy_model_output():
     raw = {
         "is_report": True,
         "report_type": "Full blood count",
-        "report_date": "2026-10-20",
+        "report_date": "2025-10-20",
         "results": [
             {"test": "Haemoglobin", "value": "11.2", "unit": "g/dL", "ref_low": 13, "ref_high": "17.0"},
             {"test": "WBC", "value": "7,400", "unit": "/uL", "reference_range": "4000 - 11000"},
@@ -70,14 +70,14 @@ def test_parse_report_cleans_messy_model_output():
     assert hb.value == 11.2 and hb.flag == "low"
     assert r.results[1].value == 7400 and r.results[1].flag == "normal"
     assert r.results[2].value_text == "Negative" and r.results[2].flag == "unknown"
-    assert r.confidence == 0.8 and r.report_date == "2026-10-20"
+    assert r.confidence == 0.8 and r.report_date == "2025-10-20"
 
 
 def test_bad_or_future_dates_are_dropped():
     assert scan._clean_date("not a date") is None
     assert scan._clean_date((date.today() + timedelta(days=30)).isoformat()) is None
     assert scan._clean_date("1999-01-01") is None
-    assert scan._clean_date("2026-10-20T08:00:00") == "2026-10-20"
+    assert scan._clean_date("2025-10-20T08:00:00") == "2025-10-20"
 
 
 def test_results_are_capped():
@@ -85,69 +85,74 @@ def test_results_are_capped():
     assert len(scan.parse_report(raw).results) == 60
 
 
-def test_not_a_report_is_rejected():
-    async def fake(*a, **k):
-        return {"is_report": False, "results": []}
+def test_not_a_report_is_rejected(monkeypatch):
+    script_llm(monkeypatch, [{"is_report": False, "results": []}])
 
-    import llm as llm_mod
+    async def authorized():
+        pass
 
-    orig = llm_mod.generate_json
-    llm_mod.generate_json = fake
-    try:
-        with pytest.raises(scan.ScanError):
-            asyncio.run(scan.scan_report(JPEG, "image/jpeg"))
-    finally:
-        llm_mod.generate_json = orig
+    with pytest.raises(scan.ScanError):
+        asyncio.run(scan.scan_report("A grocery list", authorize=authorized))
 
 
 # ------------------------------------------------------------ endpoint
 @pytest.fixture(autouse=True)
-def overrides():
+def overrides(monkeypatch):
+    db = FakeDB()
+    enable_test_ai(monkeypatch, db)
     main.app.dependency_overrides[main.current_user] = lambda: {"id": "user-1", "email": "t@example.com"}
-    main.app.dependency_overrides[main.get_db] = lambda: FakeDB()
+    main.app.dependency_overrides[main.get_db] = lambda: db
     main._scan_counts.clear()
     yield
     main.app.dependency_overrides.clear()
 
 
 def test_report_endpoint_success(monkeypatch):
+    prompts = []
     script_llm(monkeypatch, [{
         "is_report": True,
         "report_type": "Lipid profile",
-        "results": [{"test": "LDL cholesterol", "value": 4.1, "unit": "mmol/L", "ref_low": None, "ref_high": 3.0}],
+        "results": [
+            {"test": "LDL cholesterol", "value": 4.1, "unit": "mmol/L", "ref_low": None, "ref_high": 3.0},
+            {"test": "WBC", "value": 7400, "unit": "/uL", "reference_range": "4000 - 11000"},
+        ],
         "confidence": 0.9,
-    }])
-    res = TestClient(main.app).post("/api/v1/scan/report", files={"image": ("r.jpg", JPEG, "image/jpeg")})
+    }], prompts)
+    res = post_reviewed_text(TestClient(main.app), "report", REPORT_TEXT + "\nPhone: 4000 - 11000")
     assert res.status_code == 200
     d = res.json()["data"]
     assert d["needs_user_confirmation"] is True and d["report_type"] == "Lipid profile"
     assert d["results"][0]["flag"] == "high"
+    assert prompts[0].count("4000 - 11000") == 1 and REPORT_TEXT in prompts[0]
+    assert (d["results"][1]["ref_low"], d["results"][1]["ref_high"], d["results"][1]["flag"]) == (4000, 11000, "normal")
 
 
 def test_report_endpoint_errors(monkeypatch):
     script_llm(monkeypatch, [{"is_report": False, "results": []}])
     c = TestClient(main.app)
-    res = c.post("/api/v1/scan/report", files={"image": ("r.jpg", JPEG, "image/jpeg")})
+    res = post_reviewed_text(c, "report", REPORT_TEXT)
     assert res.status_code == 422 and res.json()["error"]["code"] == "SCAN_FAILED"
-    bad = c.post("/api/v1/scan/report", files={"image": ("r.pdf", b"%PDF-1.4", "application/pdf")})
-    assert bad.status_code == 400
+    bad = c.post("/api/v1/scan/medical-text", files={"image": ("r.pdf", b"%PDF-1.4", "application/pdf")})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "INVALID_INPUT"
+    legacy = c.post("/api/v1/scan/report", files={"image": ("r.pdf", b"%PDF-1.4", "application/pdf")})
+    assert legacy.status_code == 422 and legacy.json()["error"]["code"] == "INVALID_INPUT"
     script_llm(monkeypatch, [llm.LLMError("busy", 429)])
-    busy = c.post("/api/v1/scan/report", files={"image": ("r.jpg", JPEG, "image/jpeg")})
-    assert busy.status_code == 429
+    busy = post_reviewed_text(c, "report", REPORT_TEXT)
+    assert busy.status_code == 429 and busy.json()["error"]["code"] == "RATE_LIMITED"
 
 
 # ------------------------------------------------------------ assistant tool
 def test_lab_results_tool():
     db = FakeDB({"lab_results": [
         {"test_name": "Haemoglobin", "value": 11.2, "value_text": None, "unit": "g/dL",
-         "ref_low": 13, "ref_high": 17, "flag": "low", "reported_on": "2026-10-20"},
+         "ref_low": 13, "ref_high": 17, "flag": "low", "reported_on": "2025-10-20"},
         {"test_name": "Urine protein", "value": None, "value_text": "Negative", "unit": None,
          "ref_low": None, "ref_high": None, "flag": "unknown", "reported_on": None},
     ]})
     out = asyncio.run(tools.get_lab_results(db, {}))
     assert out["count"] == 2
     assert out["results"][0] == {"test": "Haemoglobin", "result": 11.2, "unit": "g/dL",
-                                 "reference": [13, 17], "flag": "low", "date": "2026-10-20"}
+                                 "reference": [13, 17], "flag": "low", "date": "2025-10-20"}
     assert out["results"][1]["result"] == "Negative"
     assert asyncio.run(tools.get_lab_results(FakeDB(), {}))["count"] == 0
 

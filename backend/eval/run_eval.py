@@ -1,37 +1,35 @@
 """
 NOVA Health evaluation. Run from backend/:
 
-  python eval/run_eval.py --mock                      # check the script itself, no key needed
-  python eval/run_eval.py --safety                    # offline: emergency detection + medicine rules
-  python eval/run_eval.py --scans --runs 3            # real model: prescription + lab report scans
-  python eval/run_eval.py --agent                     # real model: does the assistant pick the right tool?
-  python eval/run_eval.py --all --runs 3 --price-in 0.30 --price-out 2.50
+  python -m eval.run_eval --mock                     # synthetic fixtures, no network
+  python -m eval.run_eval --safety                   # offline emergency and medicine rules
+  python -m eval.run_eval --live-synthetic --scans   # approved, consented evaluation account only
 
-Prices are US dollars per million tokens (copy them from the provider's official pricing page).
-Use ONLY fake images. A report is written to eval/results/.
+Use only synthetic inputs. Report files default to eval/results/.
 """
 
 import argparse
 import asyncio
-import hashlib
 import json
 import os
 import random
 import sys
 import time
+from contextlib import ExitStack
 from datetime import datetime
+from functools import partial
 from pathlib import Path
+from unittest.mock import patch
+
+import httpx
 
 HERE = Path(__file__).resolve().parent
 BACKEND = HERE.parent
 sys.path.insert(0, str(BACKEND))
 sys.path.insert(0, str(BACKEND / "tests"))
 
-from dotenv import load_dotenv  # noqa: E402
-
-load_dotenv(BACKEND / ".env")
-
 import agent  # noqa: E402
+import ai_privacy  # noqa: E402
 import llm  # noqa: E402
 import rules  # noqa: E402
 import safety  # noqa: E402
@@ -39,23 +37,29 @@ import scan  # noqa: E402
 from eval import cases, metrics  # noqa: E402
 from fakes import FakeDB  # noqa: E402
 
+SYNTHETIC_IMAGE_DIR = BACKEND.parent / "test-data"
+CLINICAL_TEXT_SEPARATOR = "\nClinical text (JSON string):\n"
+
 
 # ============================================================== mock model (checks the script, not the AI)
 class MockModel:
     """Answers from the ground truth. noise > 0 corrupts a share of fields so the metrics drop."""
 
-    def __init__(self, images: dict[str, bytes], noise: float, seed: int = 1):
-        self.by_hash = {hashlib.sha1(b).hexdigest(): name for name, b in images.items()}
+    def __init__(self, documents: dict[str, str], noise: float, seed: int = 1):
+        self.by_text = {text: name for name, text in documents.items()}
+        if len(self.by_text) != len(documents):
+            raise ValueError("Evaluation documents must have distinct reviewed text.")
         self.noise = noise
         self.rng = random.Random(seed)
 
     def _maybe(self, good, bad):
         return bad if self.rng.random() < self.noise else good
 
-    async def __call__(self, prompt, *, image=None, mime=None, system=None, retries=1):
-        await asyncio.sleep(0.01)
+    async def __call__(self, prompt, *, authorize, system=None):
+        await authorize()
         llm.USAGE.append({"in": 1200, "out": 150})
-        name = self.by_hash.get(hashlib.sha1(image).hexdigest()) if image else None
+        prompt, separator, encoded_text = prompt.partition(CLINICAL_TEXT_SEPARATOR)
+        name = self.by_text[json.loads(encoded_text)] if separator else None
         if prompt == scan.PRESCRIPTION_PROMPT:
             exp = cases.PRESCRIPTIONS.get(name)
             if not exp:
@@ -79,7 +83,7 @@ class MockModel:
                     "ref_low": e["ref_low"], "ref_high": e["ref_high"],
                 })
             return {"is_report": True, "results": rows, "confidence": 0.9}
-        if "Question" in prompt or "USER QUESTION" in prompt:
+        if "USER QUESTION\n" in prompt:
             q = prompt.split("USER QUESTION\n", 1)[1].split("\n", 1)[0]
             case = next((c for c in cases.AGENT_CASES if c["q"] == q), None)
             if case and "TOOL RESULTS" not in prompt:
@@ -90,16 +94,20 @@ class MockModel:
 
 
 # ============================================================== helpers
-def load_images(folder: Path) -> dict[str, bytes]:
-    names = set(cases.PRESCRIPTIONS) | set(cases.REPORTS) | {n for n, _ in cases.REJECTIONS}
-    out = {}
-    for n in sorted(names):
-        f = folder / n
-        if f.exists():
-            out[n] = f.read_bytes()
-        else:
-            print(f"  (missing image, skipped: {f})")
-    return out
+async def prepare_documents(folder: Path, *, live: bool) -> dict[str, str]:
+    names = set(cases.PRESCRIPTIONS) | set(cases.REPORTS) | {name for name, _ in cases.REJECTIONS}
+    documents = {}
+    for name in sorted(names):
+        original = (folder / name).read_bytes()
+        text = safety.clinical_text(await ai_privacy.extract_medical_text(original))
+        if not any(character.isalpha() for character in text):
+            raise ValueError(f"No usable reviewed text for {name}.")
+        if live:
+            print(f"Review synthetic clinical text for {name}:\n{text}\n")
+            if input("Type share to approve this exact text for Gemini: ").strip() != "share":
+                raise ValueError("Evaluation stopped before sending unapproved text.")
+        documents[name] = text
+    return documents
 
 
 def cost(price_in, price_out, usage_slice):
@@ -115,15 +123,13 @@ def pct(x, n):
 
 
 # ============================================================== scan evaluation
-async def eval_scans(images, runs, price_in, price_out):
+async def eval_scans(documents, runs, price_in, price_out, *, authorize):
     rows = []  # one dict per task result
     for run in range(runs):
         for name, expected in cases.PRESCRIPTIONS.items():
-            if name not in images:
-                continue
             u0, t0 = len(llm.USAGE), time.perf_counter()
             try:
-                res = await scan.scan_prescription(images[name], "image/jpeg")
+                res = await scan.scan_prescription(documents[name], authorize=authorize)
                 got = [m.model_dump() for m in res.medications]
                 score, ok = metrics.score_prescription(expected, got), True
             except (scan.ScanError, llm.LLMError) as e:
@@ -131,11 +137,9 @@ async def eval_scans(images, runs, price_in, price_out):
             rows.append({"task": "prescription", "file": name, "run": run, "ok": ok, "score": score,
                          "seconds": time.perf_counter() - t0, "usage": llm.USAGE[u0:]})
         for name, expected in cases.REPORTS.items():
-            if name not in images:
-                continue
             u0, t0 = len(llm.USAGE), time.perf_counter()
             try:
-                res = await scan.scan_report(images[name], "image/jpeg")
+                res = await scan.scan_report(documents[name], authorize=authorize)
                 got = [r.model_dump() for r in res.results]
                 score, ok = metrics.score_report(expected, got), True
             except (scan.ScanError, llm.LLMError):
@@ -143,13 +147,11 @@ async def eval_scans(images, runs, price_in, price_out):
             rows.append({"task": "report", "file": name, "run": run, "ok": ok, "score": score,
                          "seconds": time.perf_counter() - t0, "usage": llm.USAGE[u0:]})
         for name, endpoint in cases.REJECTIONS:
-            if name not in images:
-                continue
             u0, t0 = len(llm.USAGE), time.perf_counter()
             rejected = False
             try:
                 fn = scan.scan_prescription if endpoint == "prescription" else scan.scan_report
-                await fn(images[name], "image/jpeg")
+                await fn(documents[name], authorize=authorize)
             except scan.ScanError:
                 rejected = True
             except llm.LLMError:
@@ -231,13 +233,18 @@ AGENT_TABLES = {
 }
 
 
-async def eval_agent(price_in, price_out):
+async def eval_agent(price_in, price_out, *, authorize, live: bool):
     rows = []
+    group_by_tool = {tool: group for group, names in agent.HEALTH_TOOLS.items() for tool in names}
+    db = FakeDB(AGENT_TABLES)
     for c in cases.AGENT_CASES:
         u0, t0 = len(llm.USAGE), time.perf_counter()
         try:
-            await asyncio.sleep(20)
-            res = await agent.run_agent(c["q"], FakeDB(AGENT_TABLES))
+            if live:
+                await asyncio.sleep(20)
+            res = await agent.run_agent(
+                c["q"], db, authorize=authorize, health_data={group_by_tool[c["tool"]]},
+            )
         except llm.LLMError as e:
             rows.append({"q": c["q"], "error": e.message})
             continue
@@ -255,7 +262,7 @@ async def eval_agent(price_in, price_out):
     emerg = [q for q in cases.EMERGENCY_YES[:5]]
     emerg_ok = 0
     for q in emerg:
-        r = await agent.run_agent(q, FakeDB(AGENT_TABLES))
+        r = await agent.run_agent(q, db, authorize=authorize)
         emerg_ok += bool(r.emergency)
     allu = [u for u in llm.USAGE]
     tin, tout, cst = cost(price_in, price_out, allu)
@@ -277,8 +284,9 @@ async def eval_agent(price_in, price_out):
 # ============================================================== report
 def markdown(results, args):
     L = [f"# NOVA Health evaluation ({datetime.now():%Y-%m-%d %H:%M})", ""]
-    L.append(f"Model: `{os.environ.get('LLM_MODEL', 'mock' if args.mock else 'not set')}`  |  runs per image: {args.runs}  |  "
-             f"{'MOCK model (checks the script only)' if args.mock else 'real model'}")
+    model = "mock" if args.mock else os.environ["LLM_MODEL"] if args.live_synthetic else "none"
+    mode = "MOCK model (checks the script only)" if args.mock else "live synthetic" if args.live_synthetic else "offline safety"
+    L.append(f"Model: `{model}`  |  runs per image: {args.runs}  |  {mode}")
     s = results.get("scans", {}).get("summary")
     if s:
         L += ["", "## Scans", "", "| Task | Items found | Precision | Recall | F1 (mean ± sd) | Field accuracy | p50 s | p95 s |", "|---|---|---|---|---|---|---|---|"]
@@ -314,54 +322,101 @@ def markdown(results, args):
     return "\n".join(L) + "\n"
 
 
+async def live_authorizer():
+    """Verify current consent for the explicitly configured evaluation account."""
+    ai_privacy.require_provider()
+    token = os.environ.get("NOVA_EVAL_ACCESS_TOKEN", "").strip()
+    if not token or not all(os.environ.get(key) for key in ("SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY")):
+        raise ValueError("Configure the approved synthetic evaluation account before making live requests.")
+
+    import main as api
+    from db import UserDB
+
+    user = await api.current_user(f"Bearer {token}")
+    authorize = partial(ai_privacy.require_consent, UserDB(token, user["id"]))
+    await authorize()
+    return authorize
+
+
+async def block_mock_http(*args, **kwargs):
+    raise RuntimeError("Outbound HTTP is disabled in mock evaluation.")
+
+
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--images", default=str(BACKEND.parent / "test-data"), help="folder with the test images")
+    ap.add_argument("--images", type=Path, default=SYNTHETIC_IMAGE_DIR, help="synthetic image folder for mock evaluations")
+    ap.add_argument("--output-dir", type=Path, default=HERE / "results")
     ap.add_argument("--scans", action="store_true")
     ap.add_argument("--safety", action="store_true")
     ap.add_argument("--agent", action="store_true")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--runs", type=int, default=1)
-    ap.add_argument("--mock", action="store_true", help="use a fake model that answers from the ground truth")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--mock", action="store_true", help="use a fake model and block outbound HTTP")
+    mode.add_argument("--live-synthetic", action="store_true", help="use approved external AI for built-in synthetic cases")
     ap.add_argument("--mock-noise", type=float, default=0.0, help="share of fields the mock gets wrong (0 to 1)")
     ap.add_argument("--price-in", type=float, default=None, help="USD per 1M input tokens")
     ap.add_argument("--price-out", type=float, default=None, help="USD per 1M output tokens")
     args = ap.parse_args()
+    if args.runs < 1:
+        ap.error("--runs must be at least 1")
     if args.all or not (args.scans or args.safety or args.agent):
-        args.scans = args.safety = True
-        args.agent = bool(os.environ.get("LLM_API_KEY")) or args.mock
-
-    images = load_images(Path(args.images))
-    if args.mock:
-        llm.generate_json = MockModel(images, args.mock_noise)
-    elif (args.scans or args.agent) and not os.environ.get("LLM_API_KEY"):
-        print("LLM_API_KEY is empty. Fill backend/.env, or use --mock to check the script, or --safety for the offline part.")
-        sys.exit(1)
+        args.scans = args.safety = args.agent = True
+    if args.live_synthetic and (not (args.scans or args.agent) or args.images.resolve() != SYNTHETIC_IMAGE_DIR.resolve()):
+        ap.error("--live-synthetic requires a model evaluation and the built-in synthetic fixtures.")
+    if (args.scans or args.agent) and not args.live_synthetic:
+        args.mock = True
 
     results = {}
-    if args.safety:
-        print("Safety evaluation (offline)...")
-        results["safety"] = eval_safety()
-    if args.scans:
-        print(f"Scan evaluation ({len(images)} images x {args.runs} run(s))...")
-        results["scans"] = await eval_scans(images, args.runs, args.price_in, args.price_out)
-    if args.agent:
-        print("Agent evaluation...")
-        llm.USAGE.clear()
-        results["agent"] = await eval_agent(args.price_in, args.price_out)
+    with ExitStack() as overrides:
+        authorize = None
+        if args.mock:
+            overrides.enter_context(patch.object(httpx.AsyncClient, "send", block_mock_http))
+            overrides.enter_context(patch.dict(os.environ, {
+                "AI_PRIVACY_PROVIDER_APPROVAL": "gemini-reviewed-paid",
+                "LLM_API_KEY": "synthetic-evaluation-key",
+                "LLM_MODEL": "gemini-evaluation-mock",
+            }))
+            consent_db = FakeDB({
+                "ai_processing_consents": [{"disclosure_version": ai_privacy.DISCLOSURE_VERSION}],
+            })
+            authorize = partial(ai_privacy.require_consent, consent_db)
+        elif args.live_synthetic:
+            authorize = await live_authorizer()
+
+        documents = await prepare_documents(args.images, live=args.live_synthetic) if args.scans else {}
+        if args.mock:
+            overrides.enter_context(patch.object(llm, "generate_json", MockModel(documents, args.mock_noise)))
+        if args.safety:
+            print("Safety evaluation (offline)...")
+            results["safety"] = eval_safety()
+        if args.scans:
+            print(f"Scan evaluation ({len(documents)} reviewed documents x {args.runs} run(s))...")
+            llm.USAGE.clear()
+            results["scans"] = await eval_scans(
+                documents, args.runs, args.price_in, args.price_out, authorize=authorize,
+            )
+        if args.agent:
+            print("Agent evaluation...")
+            llm.USAGE.clear()
+            results["agent"] = await eval_agent(
+                args.price_in, args.price_out, authorize=authorize, live=args.live_synthetic,
+            )
 
     md = markdown(results, args)
     print("\n" + md)
-    out = HERE / "results"
-    out.mkdir(exist_ok=True)
+    out = args.output_dir
+    out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S") + ("_mock" if args.mock else "")
-    (out / f"eval_{stamp}.md").write_text(md)
+    markdown_path = out / f"eval_{stamp}.md"
+    json_path = out / f"eval_{stamp}.json"
+    markdown_path.write_text(md)
     slim = json.loads(json.dumps(results, default=str))
     for sec in ("scans",):
         for r in slim.get(sec, {}).get("rows", []):
             r.pop("usage", None)
-    (out / f"eval_{stamp}.json").write_text(json.dumps(slim, indent=2))
-    print(f"Saved to eval/results/eval_{stamp}.md and .json")
+    json_path.write_text(json.dumps(slim, indent=2))
+    print(f"Saved {markdown_path} and {json_path}")
 
 
 if __name__ == "__main__":

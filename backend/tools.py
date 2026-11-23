@@ -222,20 +222,42 @@ def _active_meds(rows: list[dict], today: date) -> list[dict]:
             continue
         if end and end < today:
             continue
-        out.append({
+        med = {
             "name": m.get("name"),
             "dosage": m.get("dosage"),
             "times": m.get("times") or [],
             "until": m.get("end_date"),
-        })
+        }
+        plan = m.get("prescription_plan") or {}
+        if plan.get("kind") == "interval":
+            med["prescription_plan"] = {
+                "kind": "interval",
+                "interval_minutes": plan["interval_minutes"],
+                "first_dose_at": plan["first_dose_at"],
+            }
+        out.append(med)
     return out
 
 
-async def get_medications(db, args: dict) -> dict:
+async def get_medications(db, args: dict, *, day: date | None = None) -> dict:
     rows = await db.select(
-        "medications", "name,dosage,times,start_date,end_date", filters={"status": "eq.confirmed"},
+        "medications", "name,dosage,times,start_date,end_date,prescription_plan", filters={"status": "eq.confirmed"},
     )
-    return {"medications": _active_meds(rows, local_today())}
+    return {"medications": _active_meds(rows, day or local_today())}
+
+
+def scheduled_doses_on(med: dict, day: date) -> int:
+    plan = med.get("prescription_plan")
+    if not plan:
+        return len(med["times"])
+    start, end = map(parse_ts, day_bounds_utc(day))
+    first = parse_ts(plan["first_dose_at"])
+    interval = timedelta(minutes=plan["interval_minutes"])
+    before_start = max(timedelta(), start - first)
+    before_end = max(timedelta(), end - first)
+    following_start = -(-before_start // interval)
+    following_end = -(-before_end // interval)
+    return following_end - following_start
 
 
 async def get_recent_logs(db, args: dict) -> dict:
@@ -311,11 +333,11 @@ class ToolSpec:
 
 TOOLS: dict[str, ToolSpec] = {
     "get_profile": ToolSpec(
-        "Age range, sex, blood type, height, weight, BMI, listed medical conditions, goals.",
+        "Age range, sex, blood type, height, weight, BMI and listed medical conditions.",
         "no args", get_profile, "profile"),
     "get_allergies": ToolSpec("The user's listed allergies.", "no args", get_allergies, "allergies"),
     "get_medications": ToolSpec(
-        "Medicines the user currently takes: name, dosage, daily times, end date.",
+        "Names and dosages of medicines the user currently takes.",
         "no args", get_medications, "medications"),
     "get_recent_logs": ToolSpec(
         "Daily totals and averages from the user's logs.",
@@ -325,7 +347,7 @@ TOOLS: dict[str, ToolSpec] = {
         "Heart rate summary (latest, average, min, max, resting average).",
         'args: {"days": 1-30 (default 7)}', get_heart_rate, "heart rate"),
     "get_lab_results": ToolSpec(
-        "Lab test results the user saved from scanned reports: value, unit, reference range, low/normal/high flag, date.",
+        "Lab test results the user saved from scanned reports: value, unit, reference range, and low/normal/high flag.",
         "no args", get_lab_results, "lab results"),
     "get_cycle": ToolSpec(
         "Menstrual cycle summary from the user's own period logs.", "no args", get_cycle, "cycle"),
@@ -335,8 +357,11 @@ TOOLS: dict[str, ToolSpec] = {
 }
 
 
-def describe_tools() -> str:
-    return "\n".join(f'- {name}: {t.description} {t.args}' for name, t in TOOLS.items())
+def describe_tools(allowed: frozenset[str] | None = None) -> str:
+    return "\n".join(
+        f"- {name}: {spec.description} {spec.args}"
+        for name, spec in TOOLS.items() if allowed is None or name in allowed
+    )
 
 
 def clean_args(name: str, raw) -> dict:

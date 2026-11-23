@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../config.dart';
 import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/glass.dart';
 import '../widgets/pressable.dart';
+import 'ai_privacy_screen.dart';
 import 'food_result_screen.dart';
 import 'report_result_screen.dart';
 import 'scan_result_screen.dart';
@@ -47,66 +49,84 @@ class _ScanCameraScreenState extends State<ScanCameraScreen> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
-  /// Take a photo (camera) or choose one (gallery), send it to the backend,
-  /// then open the matching confirm screen. Nothing is saved until the user confirms.
   Future<void> _pick(ImageSource source) async {
     if (_processing) return;
+    final mode = _mode;
+    final api = ApiClient.instance;
+    final owner = AppConfig.useMockApi ? null : api.aiAccountId;
     HapticFeedback.mediumImpact();
-
-    final XFile? file;
-    try {
-      file = await _picker.pickImage(
-        source: source,
-        maxWidth: 1280,
-        maxHeight: 1280,
-        imageQuality: 85,
-      );
-    } catch (_) {
-      _toast('Could not open the camera or photos. Check the app permissions.');
-      return;
-    }
-    if (file == null) return; // cancelled
-
     setState(() => _processing = true);
     try {
-      final bytes = await file.readAsBytes();
-      if (!mounted) return;
-      if (_mode == ScanMode.prescription) {
-        final scan = await ApiClient.instance.scanPrescription(file);
-        if (!mounted) return;
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            fullscreenDialog: true,
-            builder: (_) => ScanResultScreen(scan: scan, imageBytes: bytes),
-          ),
+      if (!await ensureAiConsent(context) || !mounted) return;
+      final XFile? file;
+      try {
+        file = await _picker.pickImage(
+          source: source,
+          maxWidth: mode == ScanMode.food ? 1280 : 2300,
+          maxHeight: mode == ScanMode.food ? 1280 : 2300,
+          imageQuality: 90,
+          requestFullMetadata: false,
         );
-      } else if (_mode == ScanMode.report) {
-        final report = await ApiClient.instance.scanReport(file);
-        if (!mounted) return;
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            fullscreenDialog: true,
-            builder: (_) => ReportResultScreen(scan: report, imageBytes: bytes),
-          ),
-        );
-      } else {
-        final food = await ApiClient.instance.scanFood(file);
-        if (!mounted) return;
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            fullscreenDialog: true,
-            builder: (_) => FoodResultScreen(scan: food, imageBytes: bytes),
-          ),
-        );
+      } catch (_) {
+        _toast('Could not open the camera or photos. Check the app permissions.');
+        return;
       }
+      if (file == null || !mounted || !_sameAccount(owner)) return;
+      final bytes = await file.readAsBytes();
+      if (!mounted || !_sameAccount(owner)) return;
+      String? text;
+      if (!AppConfig.useMockApi) {
+        if (mode == ScanMode.food) {
+          final approved = await showDialog<bool>(
+            context: context,
+            builder: (_) => FoodPhotoReview(image: bytes),
+          );
+          if (approved != true) return;
+        } else {
+          String draft;
+          String? extractionMessage;
+          try {
+            draft = await api.extractMedicalText(file);
+            if (draft.trim().isEmpty) extractionMessage = 'No text was read. You can type the clinical details below.';
+          } on ApiException {
+            draft = '';
+            extractionMessage = 'Could not read this photo privately. You can type the clinical details below.';
+          }
+          if (!mounted || !_sameAccount(owner)) return;
+          text = await showDialog<String>(
+            context: context,
+            builder: (_) => MedicalTextReview(text: draft, extractionMessage: extractionMessage, image: bytes),
+          );
+          if (text == null) return;
+        }
+      }
+      if (!mounted || !_sameAccount(owner)) return;
+      final Widget result;
+      if (mode == ScanMode.prescription) {
+        final scan = await api.scanPrescription(text ?? '');
+        result = ScanResultScreen(scan: scan, imageBytes: bytes);
+      } else if (mode == ScanMode.report) {
+        final report = await api.scanReport(text ?? '');
+        result = ReportResultScreen(scan: report);
+      } else {
+        final food = await api.scanFood(file);
+        result = FoodResultScreen(scan: food, imageBytes: bytes);
+      }
+      if (!mounted || !_sameAccount(owner)) return;
+      Navigator.of(context).pushReplacement(MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => result,
+      ));
     } on ApiException catch (e) {
-      if (mounted) setState(() => _processing = false);
       _toast(e.message);
     } catch (_) {
-      if (mounted) setState(() => _processing = false);
       _toast('Something went wrong. Please try again.');
+    } finally {
+      if (mounted) setState(() => _processing = false);
     }
   }
+
+  bool _sameAccount(String? owner) => AppConfig.useMockApi || ApiClient.instance.aiAccountId == owner;
 
   @override
   Widget build(BuildContext context) {
@@ -143,7 +163,9 @@ class _ScanCameraScreenState extends State<ScanCameraScreen> {
                       label: 'Close',
                       onTap: () => Navigator.of(context).maybePop(),
                     ),
-                    _ModeSwitch(mode: _mode, onChanged: (m) => setState(() => _mode = m)),
+                    _ModeSwitch(mode: _mode, onChanged: (m) {
+                      if (!_processing) setState(() => _mode = m);
+                    }),
                     GlassIconButton(
                       icon: _flash ? CupertinoIcons.bolt_fill : CupertinoIcons.bolt_slash,
                       label: _flash ? 'Flash on' : 'Flash off',
@@ -197,6 +219,103 @@ class _ScanCameraScreenState extends State<ScanCameraScreen> {
       ),
     );
   }
+}
+
+class MedicalTextReview extends StatefulWidget {
+  const MedicalTextReview({super.key, required this.text, this.extractionMessage, this.image});
+
+  final String text;
+  final String? extractionMessage;
+  final Uint8List? image;
+
+  @override
+  State<MedicalTextReview> createState() => _MedicalTextReviewState();
+}
+
+class _MedicalTextReviewState extends State<MedicalTextReview> {
+  late final _text = TextEditingController(text: widget.text);
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Review text before sharing'),
+    scrollable: true,
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Only the text below may be sent to Google Gemini. Remove names, addresses, IDs and other '
+          'identifiers. Correct any reading errors and keep the clinical details and instructions.',
+        ),
+        if (widget.image case final image?) ...[
+          const SizedBox(height: 8),
+          InteractiveViewer(
+            child: Image.memory(image, height: 130, fit: BoxFit.contain, semanticLabel: 'Original photo for comparison'),
+          ),
+        ],
+        if (widget.extractionMessage != null) ...[
+          const SizedBox(height: 8),
+          Text(widget.extractionMessage!),
+        ],
+        const SizedBox(height: 12),
+        TextField(
+          controller: _text,
+          decoration: const InputDecoration(labelText: 'Clinical text'),
+          autocorrect: false,
+          enableSuggestions: false,
+          enableIMEPersonalizedLearning: false,
+          minLines: 4,
+          maxLines: 8,
+          maxLength: 10000,
+        ),
+      ],
+    ),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+      ValueListenableBuilder(
+        valueListenable: _text,
+        builder: (context, value, _) => FilledButton(
+          onPressed: value.text.trim().isEmpty ? null : () {
+            final reviewed = _text.text.trim();
+            if (reviewed.isNotEmpty) Navigator.pop(context, reviewed);
+          },
+          child: const Text('Share text with Gemini'),
+        ),
+      ),
+    ],
+  );
+}
+
+class FoodPhotoReview extends StatelessWidget {
+  const FoodPhotoReview({super.key, required this.image});
+  final Uint8List image;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Review food photo'),
+    scrollable: true,
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Text(
+          'Google Gemini will receive this photo after NOVA removes its metadata. '
+          'Only share a photo of your food. Cancel if faces, documents or other identifying details are visible.',
+        ),
+        const SizedBox(height: 12),
+        Image.memory(image, height: 180, fit: BoxFit.contain),
+      ],
+    ),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+      FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Share food photo')),
+    ],
+  );
 }
 
 class _ModeSwitch extends StatelessWidget {

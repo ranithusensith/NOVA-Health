@@ -6,6 +6,7 @@ security applies: a user can only ever read or write their own rows. This also
 means the backend does NOT need the secret (service_role) key.
 """
 
+from datetime import datetime, timezone
 import os
 
 import httpx
@@ -58,7 +59,9 @@ class UserDB:
         if res.status_code >= 400:
             raise DBError(f"Database error ({res.status_code}).")
         data = res.json()
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            raise DBError("Unexpected database response.")
+        return data
 
     async def insert(self, table: str, rows: dict | list[dict]) -> None:
         headers = {**self._headers(), "Prefer": "return=minimal"}
@@ -69,3 +72,38 @@ class UserDB:
             raise DBError("Could not reach the database.") from e
         if res.status_code >= 400:
             raise DBError(f"Database error ({res.status_code}).")
+
+    async def set_ai_consent(self, disclosure_version: str | None) -> None:
+        headers = {**self._headers(), "Prefer": "return=minimal,resolution=merge-duplicates"}
+        url = f"{self._base}/ai_processing_consents"
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                if disclosure_version is None:
+                    res = await client.delete(url, params={"user_id": f"eq.{self.user_id}"}, headers=headers)
+                else:
+                    res = await client.post(
+                        url, params={"on_conflict": "user_id"}, headers=headers,
+                        json={
+                            "user_id": self.user_id, "disclosure_version": disclosure_version,
+                            "consented_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+        except httpx.HTTPError:
+            raise DBError("Could not update AI consent.") from None
+        if not 200 <= res.status_code < 300:
+            raise DBError("Could not update AI consent.")
+
+    async def delete_legacy_ai_chats(self) -> int:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                res = await client.post(
+                    f"{self._base}/rpc/delete_legacy_ai_chats", json={}, headers=self._headers(),
+                )
+            if not 200 <= res.status_code < 300:
+                raise DBError("Could not delete older chats.")
+            count = res.json()
+            if type(count) is not int or count < 0:
+                raise DBError("Could not verify chat deletion.")
+            return count
+        except (httpx.HTTPError, ValueError):
+            raise DBError("Could not verify chat deletion.") from None

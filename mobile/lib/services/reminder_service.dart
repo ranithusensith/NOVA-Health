@@ -221,7 +221,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
 
       final meds = await client
           .from('medications')
-          .select('name,dosage,times,start_date,end_date')
+          .select('name,dosage,times,start_date,end_date,prescription_plan,reminders_enabled')
           .eq('user_id', user.id)
           .eq('status', 'confirmed');
 

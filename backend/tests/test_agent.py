@@ -24,7 +24,7 @@ def test_tool_call_then_final_answer(monkeypatch):
         {"action": "tool", "tool": "get_recent_logs", "args": {"kind": "sleep", "days": 7}},
         {"action": "final", "answer": "You slept about 5.5 hours a night.", "used": ["sleep"]},
     ], prompts)
-    res = run(agent.run_agent("How did I sleep this week?", FakeDB({"sleep_logs": SLEEP_ROWS})))
+    res = run(agent.run_agent("How did I sleep this week?", FakeDB({"sleep_logs": SLEEP_ROWS}), health_data={"logs"}))
     assert "5.5 hours" in res.reply
     assert res.reply.rstrip().endswith(safety.DISCLAIMER)
     assert res.sources == ["sleep"]
@@ -64,7 +64,7 @@ def test_loop_is_bounded_and_forces_a_final_answer(monkeypatch):
         {"action": "tool", "tool": "get_allergies", "args": {}},
         {"action": "final", "answer": "Here is what I found.", "used": ["profile"]},
     ], prompts)
-    res = run(agent.run_agent("Tell me about me", FakeDB(), max_steps=2))
+    res = run(agent.run_agent("Tell me about me", FakeDB(), max_steps=2, health_data={"profile", "medications"}))
     assert len(prompts) == 3  # 2 steps + 1 forced final
     assert "Now answer" in prompts[2]
     assert "Here is what I found" in res.reply
@@ -87,7 +87,7 @@ def test_repeated_tool_call_is_not_run_twice(monkeypatch):
         {"action": "tool", "tool": "get_recent_logs", "args": {"kind": "sleep"}},
         {"action": "final", "answer": "Fine.", "used": []},
     ])
-    res = run(agent.run_agent("sleep?", db))
+    res = run(agent.run_agent("sleep?", db, health_data={"logs"}))
     assert [s.get("note") for s in res.steps] == [None, "repeat"]
     assert sum(1 for t, *_ in db.selects if t == "sleep_logs") == 1
 
@@ -98,7 +98,7 @@ def test_bad_tool_arguments_do_not_crash(monkeypatch):
         {"action": "tool", "tool": "no_such_tool", "args": {}},
         {"action": "final", "answer": "I could not read that.", "used": []},
     ])
-    res = run(agent.run_agent("what is my blood?", FakeDB()))
+    res = run(agent.run_agent("what is my blood?", FakeDB(), health_data={"logs"}))
     assert all(s["ok"] is False for s in res.steps[:2])
     assert "could not read" in res.reply
 
@@ -111,7 +111,7 @@ def test_database_failure_is_reported_to_the_model_not_the_user(monkeypatch):
         {"action": "tool", "tool": "get_recent_logs", "args": {"kind": "water"}},
         {"action": "final", "answer": "I could not read your water logs right now.", "used": []},
     ], prompts)
-    res = run(agent.run_agent("water?", FakeDB({"water_logs": DBError("down")})))
+    res = run(agent.run_agent("water?", FakeDB({"water_logs": DBError("down")}), health_data={"logs"}))
     assert "Could not read this data right now" in prompts[1]
     assert res.steps[0]["ok"] is False
 
@@ -131,8 +131,9 @@ def test_allergy_conflict_is_added_by_fixed_rules_even_if_the_model_ignores_it(m
     })
     prompts = []
     script_llm(monkeypatch, [{"action": "final", "answer": "Take it with water.", "used": []}], prompts)
-    res = run(agent.run_agent("Can I take my medicine with food?", db))
+    res = run(agent.run_agent("Can I take my medicine with food?", db, health_data={"medications"}))
     assert "SAFETY NOTES" in prompts[0]
+    assert "Amoxicillin" not in prompts[0] and "Penicillin" not in prompts[0]
     assert "Safety notes" in res.reply and "Amoxicillin" in res.reply
     assert res.warnings and res.warnings[0]["severity"] == "high"
 

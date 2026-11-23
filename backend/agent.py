@@ -19,6 +19,15 @@ MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", "4"))
 MAX_OBSERVATION_CHARS = 1800
 MAX_QUESTION_CHARS = 1000
 
+HEALTH_TOOLS = {
+    "profile": ("get_profile",),
+    "medications": ("get_allergies", "get_medications", "check_medication_safety"),
+    "logs": ("get_recent_logs",),
+    "heart_rate": ("get_heart_rate",),
+    "cycle": ("get_cycle",),
+    "lab_results": ("get_lab_results",),
+}
+
 SYSTEM = """You are NOVA, a careful personal health assistant inside a mobile app. You can look at the user's own health data with tools.
 
 RULES
@@ -50,13 +59,17 @@ def _short(obj) -> str:
 
 
 def build_prompt(question: str, history: list[dict], notes: list[dict], observations: list[dict], *,
-                 final_only: bool = False) -> str:
-    parts = ["AVAILABLE TOOLS\n" + tools.describe_tools()]
+                 final_only: bool = False, allowed_tools: frozenset[str] = frozenset()) -> str:
+    parts = [
+        "AVAILABLE TOOLS\n" + tools.describe_tools(allowed_tools)
+        if allowed_tools else "No personal health tools are available for this turn. Answer in general terms."
+    ]
     if notes:
         parts.append("SAFETY NOTES (from fixed rules, always respect them):\n" + "\n".join(
-            f"- [{n['severity']}] {n['message']}" for n in notes[:5]))
+            f"- [{n['severity']}] A local safety rule flagged a possible issue. Refer the user to a doctor or pharmacist."
+            for n in notes[:5]))
     if history:
-        lines = [f"{m.get('role', 'user')}: {safety.redact(str(m.get('content', '')))[:400]}" for m in history[-6:]]
+        lines = [f"{m.get('role', 'user')}: {m['content']}" for m in history[-6:]]
         parts.append("RECENT CONVERSATION\n" + "\n".join(lines))
     parts.append(f"USER QUESTION\n{question}")
     if observations:
@@ -75,39 +88,96 @@ async def _safety_notes(db) -> list[dict]:
         return []
 
 
+def _minimize_result(name: str, result: dict, identifiers: tuple[str, ...]) -> dict:
+    """Project each tool's response onto clinical fields used by the assistant."""
+    def clean(value):
+        if isinstance(value, str):
+            return safety.redact_chat(value, identifiers)[:160]
+        if isinstance(value, list):
+            return [clean(item) for item in value[:15]]
+        return value if value is None or type(value) in (int, bool, float) else None
+
+    row_specs = {
+        "get_medications": ("medications", ("name", "dosage")),
+        "get_lab_results": ("results", ("test", "result", "unit", "reference", "flag")),
+    }
+    if name in row_specs:
+        key, fields = row_specs[name]
+        return {key: [{field: clean(row.get(field)) for field in fields} for row in result.get(key, [])[:15]]}
+    if name == "get_recent_logs":
+        out = {key: clean(result[key]) for key in (
+            "kind", "days", "days_with_data", "average_ml_on_logged_days",
+            "average_hours_on_logged_days", "average_kcal_on_logged_days", "low_or_bad_days", "count",
+        ) if key in result}
+        if "symptoms" in result:
+            out["symptoms"] = [
+                {key: clean(row.get(key)) for key in ("name", "severity", "status")}
+                for row in result["symptoms"][:15]
+            ]
+        for key in ("ml_per_day", "hours_per_day", "moods_per_day"):
+            if key in result:
+                out[key + "_oldest_to_newest"] = clean(list(result[key].values()))
+        if "per_day" in result:
+            out["meal_totals_oldest_to_newest"] = [
+                {key: clean(row.get(key)) for key in ("meals", "kcal")}
+                for row in list(result["per_day"].values())[:15]
+            ]
+        return out
+    if name == "check_medication_safety":
+        return {"warning_severities": [row.get("severity") for row in result.get("warnings", [])[:5]]}
+    fields = {
+        "get_profile": ("age_range", "sex", "blood_type", "height_cm", "weight_kg", "bmi", "conditions"),
+        "get_allergies": ("allergies",),
+        "get_heart_rate": ("count", "latest_bpm", "average_bpm", "min_bpm", "max_bpm", "resting_average_bpm"),
+        "get_cycle": ("logged_periods", "days_since_last_start", "on_period_now", "average_cycle_days"),
+    }
+    projected = {key: clean(result[key]) for key in fields.get(name, ()) if key in result}
+    return projected or {"note": "No data available."}
+
+
 async def run_agent(question: str, db, *, history: list[dict] | None = None,
-                    max_steps: int | None = None) -> AgentResult:
-    question = safety.redact(question).strip()[:MAX_QUESTION_CHARS]
+                    max_steps: int | None = None, authorize=None, health_data: set[str] | None = None,
+                    identifiers: tuple[str, ...] = ()) -> AgentResult:
 
     # 1) Fixed emergency rules run BEFORE any AI call.
     kind = safety.detect_emergency(question)
     if kind:
         return AgentResult(reply=safety.emergency_reply(kind), emergency=True)
 
-    notes = await _safety_notes(db)
+    question = safety.redact_chat(question, identifiers).strip()[:MAX_QUESTION_CHARS]
+    history = [
+        {"role": row.get("role", "user"), "content": safety.redact_chat(row["content"], identifiers)[:400]}
+        for row in (history or [])[-4:] if row.get("role") in ("user", "assistant") and isinstance(row.get("content"), str)
+    ]
+    selected = health_data or set()
+    allowed_tools = frozenset(name for group in selected for name in HEALTH_TOOLS.get(group, ()))
+    notes = await _safety_notes(db) if "medications" in selected else []
     steps: list[dict] = []
     observations: list[dict] = []
     seen: set[str] = set()
     sources: list[str] = []
     answer: str | None = None
-    used: list[str] = []
 
     limit = max_steps if max_steps is not None else MAX_STEPS
     for _ in range(limit):
         step = await llm.generate_json(
-            build_prompt(question, history or [], notes, observations), system=SYSTEM)
+            build_prompt(question, history, notes, observations, allowed_tools=allowed_tools),
+            system=SYSTEM, authorize=authorize)
         action = step.get("action")
 
         if action == "final" and isinstance(step.get("answer"), str) and step["answer"].strip():
             answer = step["answer"]
-            used = [str(u) for u in (step.get("used") or []) if isinstance(u, (str, int))]
             break
 
         if action == "tool" and isinstance(step.get("tool"), str):
             name = step["tool"]
+            if name not in allowed_tools:
+                observations.append({"error": "That tool is unavailable for this turn."})
+                steps.append({"ok": False, "note": "tool unavailable"})
+                continue
             raw_args = step.get("args")
             try:
-                args = tools.clean_args(name, raw_args) if name in tools.TOOLS else {}
+                args = tools.clean_args(name, raw_args)
                 key = name + json.dumps(args, sort_keys=True)
                 if key in seen:
                     observations.append({"tool": name, "result": "Already fetched. Use the earlier result."})
@@ -115,14 +185,11 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
                     continue
                 seen.add(key)
                 result = await tools.run_tool(name, raw_args, db)
-                observations.append({"tool": name, "args": args, "result": result})
+                observations.append({"tool": name, "args": args, "result": _minimize_result(name, result, identifiers)})
                 steps.append({"tool": name, "args": args, "ok": True})
                 label = tools.source_label(name, args)
                 if label not in sources:
                     sources.append(label)
-            except ValueError as e:
-                observations.append({"tool": name, "error": str(e)})
-                steps.append({"tool": name, "ok": False, "note": str(e)})
             except Exception:  # noqa: BLE001  (database hiccup: tell the model, keep going)
                 observations.append({"tool": name, "error": "Could not read this data right now."})
                 steps.append({"tool": name, "ok": False, "note": "data error"})
@@ -133,17 +200,13 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
 
     if answer is None:  # steps used up: ask for a final answer with what we have
         step = await llm.generate_json(
-            build_prompt(question, history or [], notes, observations, final_only=True), system=SYSTEM)
+            build_prompt(question, history, notes, observations, final_only=True, allowed_tools=allowed_tools),
+            system=SYSTEM, authorize=authorize)
         if isinstance(step.get("answer"), str) and step["answer"].strip():
             answer = step["answer"]
-            used = [str(u) for u in (step.get("used") or []) if isinstance(u, (str, int))]
         else:
             answer = ("I could not finish that. Please ask again in a simpler way, "
                       "or check your logs in the app.")
 
-    for u in used:
-        if u and u not in sources and len(sources) < 6:
-            sources.append(u)
-
-    reply = safety.finalize(answer, notes, question)
+    reply = safety.finalize(safety.redact_chat(answer, identifiers), notes, question)
     return AgentResult(reply=reply, sources=sources, steps=steps, warnings=notes)

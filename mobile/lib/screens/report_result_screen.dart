@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -12,16 +10,14 @@ import '../widgets/content.dart';
 import '../widgets/glass.dart';
 import '../widgets/lab_flag_chip.dart';
 import '../widgets/pressable.dart';
-import '../widgets/states.dart';
 import 'scan_camera_screen.dart';
 
 /// Lab report scan result. The user ticks the rows to keep; nothing is saved
 /// until they confirm. Flags come from the printed reference ranges.
 class ReportResultScreen extends StatefulWidget {
-  const ReportResultScreen({super.key, required this.scan, this.imageBytes});
+  const ReportResultScreen({super.key, required this.scan});
 
   final ReportScan scan;
-  final Uint8List? imageBytes;
 
   @override
   State<ReportResultScreen> createState() => _ReportResultScreenState();
@@ -46,10 +42,11 @@ class _ReportResultScreenState extends State<ReportResultScreen> {
       HealthRepository.notifyChanged();
       navigator.popUntil((r) => r.isFirst);
       messenger.showSnackBar(SnackBar(content: Text('$saved ${saved == 1 ? 'result' : 'results'} saved to Medical records')));
-    } catch (e) {
-      debugPrint('Saving lab results failed: $e');
+    } catch (_) {
       if (mounted) setState(() => _saving = false);
-      messenger.showSnackBar(SnackBar(content: Text(friendlyError(e))));
+      messenger.showSnackBar(const SnackBar(
+        content: Text('Could not verify that the lab results were saved. Check Medical records before trying again.'),
+      ));
     }
   }
 

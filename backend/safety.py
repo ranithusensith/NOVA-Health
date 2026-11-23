@@ -18,14 +18,80 @@ MAX_REPLY_CHARS = 1200
 # ---------------------------------------------------------------- redaction
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _NIC = re.compile(r"\b(?:\d{9}[vVxX]|\d{12})\b")
-_PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d\s().-]{6,}\d)(?!\w)")
+_PHONE = re.compile(r"(?<![\w-])(?!(?:\d{4}-\d{2}-\d{2}|\d{1,2}-\d{1,2}-\d{4})\b)(?:\+?\d[0-9 ().-]{6,}\d)(?!\w)")
+_LAB_RANGE = re.compile(r"[1-9]\d{3,5}[ \t]*-[ \t]*[1-9]\d{3,5}")
+_LAB_RANGE_CONTEXT = re.compile(r"\b(?:ref(?:erence)?|range|wbc|rbc|platelets)\b|/[uµμ]l\b", re.I)
+_PHONE_LABEL = re.compile(
+    r"\b(?:phone|mobile|tel(?:ephone)?|fax)\s*(?:number|no\.?)?\s*[:=]\s*"
+    r"(?:\+?\d[0-9 ().-]{6,}\d)(?!\w)", re.I,
+)
+_UUID = re.compile(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", re.I)
+_URL = re.compile(r"\b(?:https?://|www\.)[^\s<>]+", re.I)
+_ID_LABEL = re.compile(
+    r"\b(?:(?:patient|national|medical record|record|hospital|visit|sample|accession|lab|passport|insurance)"
+    r"\s*(?:id|no\.?|number|#)\s*[:#=-]?|(?:id|mrn|nic)\s*[:#=])\s*[\w-]+", re.I,
+)
+_NAME_LABEL = re.compile(
+    r"\b(?:my name is|(?:patient|provider|doctor|full)\s+name\s*[:=]|name\s*[:=])"
+    r"\s*[^\W\d_][^,;.!?\n]{0,90}", re.I,
+)
+_IDENTITY_LINE = re.compile(
+    r"^\s*(?:patient(?:\s+name)?|name|doctor|physician|provider|prescriber|ordered by|referred by|"
+    r"collected by|reviewed by|signed by|address|dob|date of birth|birth date|phone|tel|fax|"
+    r"e-?mail|mrn|nic|passport|insurance|(?:medical record|patient|hospital|visit|sample|accession|lab)"
+    r"\s*(?:id|no\.?|number|#))\s*[:#=.-]\s*.*$", re.I,
+)
+_ADDRESS = re.compile(
+    r"\b\d{1,6}\s+(?:[^\W\d_]+\s+){1,5}(?:street|road|lane|avenue|drive|boulevard)\b", re.I,
+)
+_EXACT_DATE = re.compile(r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b")
+_DOB = re.compile(
+    r"\b(?:dob|date of birth|birth date|born on)\s*[:=]?\s*"
+    r"(?:\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|\d{1,2}\s+[a-z]+\s+\d{4})\b", re.I,
+)
 
 
-def redact(text: str) -> str:
-    text = _EMAIL.sub("[email]", text)
-    text = _NIC.sub("[id]", text)
-    text = _PHONE.sub("[phone]", text)
-    return text
+def redact(
+    text: str, known_identifiers: tuple[str, ...] = (), *, clinical_ranges: bool = False,
+) -> str:
+    for identity in sorted(set(known_identifiers), key=len, reverse=True):
+        identity = identity.strip()
+        if len(identity) >= 2:
+            text = re.sub(r"(?<!\w)" + re.escape(identity) + r"(?!\w)", "[redacted]", text, flags=re.I)
+    for pattern, placeholder in (
+        (_URL, "[link]"), (_EMAIL, "[email]"), (_UUID, "[id]"), (_NIC, "[id]"),
+        (_ID_LABEL, "[id]"), (_NAME_LABEL, "[name]"), (_ADDRESS, "[address]"),
+        (_DOB, "[birth date]"), (_PHONE_LABEL, "[phone]"),
+    ):
+        text = pattern.sub(placeholder, text)
+    def phone_or_range(match: re.Match) -> str:
+        candidate = match[0]
+        # A range in lab context can look like a phone number. Labeled
+        # contact details have already been removed.
+        if clinical_ranges and _LAB_RANGE.fullmatch(candidate):
+            return candidate
+        return "[phone]" if sum(char.isdigit() for char in candidate) >= 8 else candidate
+
+    return _PHONE.sub(phone_or_range, text)
+
+
+def redact_chat(text: str, known_identifiers: tuple[str, ...]) -> str:
+    return _EXACT_DATE.sub("[date]", redact(text, known_identifiers))
+
+
+def is_identity_line(line: str) -> bool:
+    return _IDENTITY_LINE.fullmatch(line) is not None
+
+
+def clinical_text(text: str, known_identifiers: tuple[str, ...] = ()) -> str:
+    """Drop common document headers and redact remaining direct identifiers."""
+    return "\n".join(
+        cleaned for line in text.splitlines()
+        if not is_identity_line(line)
+        if (cleaned := redact(
+            line, known_identifiers, clinical_ranges=_LAB_RANGE_CONTEXT.search(line) is not None,
+        ).strip())
+    )
 
 
 # ---------------------------------------------------------------- emergencies

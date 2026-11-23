@@ -29,7 +29,7 @@ class CareRepository {
   Future<List<MedicationRecord>> medications({bool includeEnded = false}) async {
     var query = _db
         .from('medications')
-        .select('id,name,dosage,times,start_date,end_date,status,source')
+        .select('id,name,dosage,times,start_date,end_date,status,source,prescription_plan,reminders_enabled')
         .eq('user_id', _uid);
     if (!includeEnded) query = query.neq('status', 'ended');
     final rows = await query.order('name');
@@ -63,6 +63,7 @@ class CareRepository {
     required List<String> times,
     required DateTime startDate,
     DateTime? endDate,
+    bool? remindersEnabled,
   }) async {
     await _db.from('medications').update({
       'name': name,
@@ -70,6 +71,7 @@ class CareRepository {
       'times': times,
       'start_date': ymd(startDate),
       'end_date': endDate == null ? null : ymd(endDate),
+      if (remindersEnabled != null) 'reminders_enabled': remindersEnabled,
     }).eq('id', id).eq('user_id', _uid);
     HealthRepository.notifyChanged();
   }
@@ -226,20 +228,13 @@ class CareRepository {
           sleepHours: sleepH[i],
           moodLevel: moodL[i],
           dosesTaken: taken[i],
-          dosesScheduled: meds
-              .where((m) => _wasActive(m, from.add(Duration(days: i))))
-              .fold(0, (sum, m) => sum + m.times.length),
+          dosesScheduled: meds.fold(
+            0,
+            (sum, m) => sum + m.dosesOn(from.add(Duration(days: i)), includeEnded: true).length,
+          ),
           calories: kcal[i],
         ),
     ];
-  }
-
-  /// An ended medicine still counts for the days before it was stopped.
-  bool _wasActive(MedicationRecord m, DateTime day) {
-    final d = dayOf(day);
-    if (m.startDate != null && dayOf(m.startDate!).isAfter(d)) return false;
-    if (m.endDate != null && dayOf(m.endDate!).isBefore(d)) return false;
-    return true;
   }
 
   /// Stats for a single day (used by the daily report).
@@ -262,13 +257,14 @@ class CareRepository {
     return [for (final r in rows) EmergencyContact.fromJson(r)];
   }
 
-  Future<void> addEmergencyContact({required String name, required String phone, String? relationship}) async {
-    await _db.from('emergency_contacts').insert({
+  Future<EmergencyContact> addEmergencyContact({required String name, required String phone, String? relationship}) async {
+    final row = await _db.from('emergency_contacts').insert({
       'user_id': _uid,
       'name': name,
       'phone': phone,
       'relationship': (relationship == null || relationship.isEmpty) ? null : relationship,
-    });
+    }).select('id,name,phone,relationship').single();
+    return EmergencyContact.fromJson(row);
   }
 
   Future<void> deleteEmergencyContact(String id) async {

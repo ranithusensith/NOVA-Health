@@ -1,12 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../data/care_models.dart';
-import '../data/care_repository.dart';
-import '../data/sample_data.dart';
 import '../services/api_client.dart';
+import '../services/emergency_service.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/glass.dart';
@@ -21,40 +21,93 @@ void openEmergency(BuildContext context) {
 /// Sri Lanka's free 24-hour ambulance service (Suwa Seriya).
 const ambulanceNumber = '1990';
 
-Future<void> callNumber(BuildContext context, String phone) async {
-  final cleaned = phone.replaceAll(RegExp(r'[^0-9+]'), '');
-  final ok = await launchUrl(Uri(scheme: 'tel', path: cleaned));
-  if (!ok && context.mounted) showNovaToast(context, 'Calling is not available on this device.');
-}
+enum _ComposerState { idle, opening, opened, failed }
 
-enum _SosPhase { idle, sending, sent, failed }
-
-/// 08 Emergency — hold the SOS button for 3 seconds, confirm, and NOVA alerts
-/// your emergency contacts (POST /api/v1/emergency/trigger).
+/// Hold SOS to request an alert. Provider delivery and manual SMS stay separate.
 class EmergencyScreen extends StatefulWidget {
-  const EmergencyScreen({super.key});
+  const EmergencyScreen({super.key, this.service});
+
+  final EmergencyService? service;
 
   @override
   State<EmergencyScreen> createState() => _EmergencyScreenState();
 }
 
 class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProviderStateMixin {
+  late final _service = widget.service ?? EmergencyService.instance;
   late final AnimationController _hold =
       AnimationController(vsync: this, duration: const Duration(seconds: 3))..addStatusListener(_onHoldStatus);
-  late Future<List<EmergencyContact>> _contacts = CareRepository.instance.emergencyContacts();
+  late final String? _owner = _service.accountId;
+  late final StreamSubscription<String?> _accountSubscription;
 
-  _SosPhase _phase = _SosPhase.idle;
-  DateTime? _sentAt;
-  int _notified = 0;
-  String? _failure;
+  List<EmergencyContact>? _contacts;
+  int _contactsLoad = 0;
+  bool _contactsLoading = true;
+  bool _usingSaved = false;
+  bool _sessionChanged = false;
+  bool _confirming = false;
+  bool _sending = false;
+  bool _checking = false;
+  bool _statusUnavailable = false;
+  EmergencyResult? _result;
+  Timer? _poll;
+  _ComposerState _composer = _ComposerState.idle;
+
+  bool get _sameAccount => mounted && !_sessionChanged && _service.accountId == _owner;
+
+  @override
+  void initState() {
+    super.initState();
+    _accountSubscription = _service.accountChanges.listen((owner) {
+      if (owner == _owner || !mounted) return;
+      _poll?.cancel();
+      setState(() {
+        _sessionChanged = true;
+        _contacts = null;
+        _contactsLoading = false;
+        _result = null;
+        _sending = false;
+        _composer = _ComposerState.idle;
+      });
+    }, onError: (Object _) {});
+    _reloadContacts();
+  }
 
   @override
   void dispose() {
+    _poll?.cancel();
+    _accountSubscription.cancel();
     _hold.dispose();
     super.dispose();
   }
 
-  void _reloadContacts() => setState(() => _contacts = CareRepository.instance.emergencyContacts());
+  Future<void> _reloadContacts() async {
+    if (!_sameAccount) return;
+    final load = ++_contactsLoad;
+    setState(() => _contactsLoading = true);
+    var online = false;
+    unawaited(_service.cachedContacts().then((saved) {
+      if (_sameAccount && load == _contactsLoad && !online && saved != null) {
+        setState(() {
+          _contacts ??= saved;
+          _usingSaved = true;
+        });
+      }
+    }).catchError((Object _) {}));
+    try {
+      final contacts = await _service.refreshContacts();
+      if (!_sameAccount || load != _contactsLoad || contacts == null) return;
+      online = true;
+      setState(() {
+        _contacts = contacts;
+        _usingSaved = false;
+      });
+    } catch (_) {
+      if (_sameAccount && load == _contactsLoad) setState(() => _usingSaved = _contacts != null);
+    } finally {
+      if (_sameAccount && load == _contactsLoad) setState(() => _contactsLoading = false);
+    }
+  }
 
   void _onHoldStatus(AnimationStatus status) {
     if (status == AnimationStatus.completed) {
@@ -64,58 +117,134 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
     }
   }
 
+  Future<void> _call(String phone) async {
+    try {
+      if (await _service.call(phone)) return;
+    } catch (_) {
+      // Keep the number on screen when the platform cannot launch its dialer.
+    }
+    if (mounted) showNovaToast(context, 'Could not open the dialer. Use your phone to call directly.');
+  }
+
   Future<void> _confirmAndSend() async {
+    if (!_sameAccount || _confirming || _sending) return;
+    if (_contacts?.isEmpty == true && !_usingSaved && !_contactsLoading) {
+      setState(() => _result = const EmergencyResult(status: SosDeliveryState.noContacts));
+      return;
+    }
+    _confirming = true;
     final ok = await showCupertinoDialog<bool>(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
         title: const Text('Send SOS?'),
-        content: const Text('NOVA will alert your emergency contacts now. In a life-threatening emergency, also call 1990.'),
+        content: const Text('Request an alert for your emergency contacts. Call 1990 if you need urgent help.'),
         actions: [
           CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           CupertinoDialogAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, true), child: const Text('Send SOS')),
         ],
       ),
     );
-    if (ok != true || !mounted) return;
+    _confirming = false;
+    if (ok != true || !_sameAccount) return;
+    _poll?.cancel();
     setState(() {
-      _phase = _SosPhase.sending;
-      _failure = null;
+      _sending = true;
+      _statusUnavailable = false;
+      _composer = _ComposerState.idle;
     });
     try {
-      final result = await ApiClient.instance.triggerEmergencyDetailed();
-      if (!mounted) return;
-      setState(() {
-        _phase = _SosPhase.sent;
-        _sentAt = DateTime.now();
-        _notified = result.notified;
-      });
-      // No SMS service on the server: open the phone's own messages app, ready to send.
-      if (!result.delivered) await _smsFallback();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _phase = _SosPhase.failed;
-        _failure = e is ApiException ? e.message : friendlyError(e);
-      });
-      // Server unreachable (for example no internet): SMS still works without data.
-      await _smsFallback();
+      final result = await _service.trigger();
+      if (!_sameAccount) return;
+      setState(() => _result = result);
+      if (result.canRefresh && result.attemptId != null) {
+        _poll = Timer.periodic(const Duration(seconds: 10), (timer) {
+          if (timer.tick >= 12) timer.cancel();
+          _checkStatus();
+        });
+      }
+    } catch (_) {
+      if (_sameAccount) setState(() => _result = const EmergencyResult(status: SosDeliveryState.unknown));
+    } finally {
+      if (_sameAccount) setState(() => _sending = false);
     }
   }
 
-  /// Opens the messages app with every emergency contact and the SOS text filled in.
-  Future<void> _smsFallback() async {
+  Future<void> _checkStatus() async {
+    final attempt = _result?.attemptId;
+    if (!_sameAccount || attempt == null || _checking) return;
+    setState(() => _checking = true);
     try {
-      final contacts = await _contacts;
-      final numbers = contacts
-          .map((c) => c.phone.replaceAll(RegExp(r'[^0-9+]'), ''))
-          .where((n) => n.isNotEmpty)
-          .join(',');
-      if (numbers.isEmpty) return;
-      final body = Uri.encodeComponent('NOVA Health SOS: I need help. Please call me or come to me now.');
-      await launchUrl(Uri.parse('sms:$numbers?body=$body'));
+      final result = await _service.checkStatus(attempt);
+      if (!_sameAccount || _result?.attemptId != attempt) return;
+      if (!result.canRefresh) _poll?.cancel();
+      setState(() {
+        _result = result;
+        _statusUnavailable = result.statusCheckUnavailable;
+      });
     } catch (_) {
-      // Nothing more to do: the screen already tells the user to call 1990.
+      if (_sameAccount && _result?.attemptId == attempt) {
+        setState(() => _statusUnavailable = true);
+      }
+    } finally {
+      if (_sameAccount) setState(() => _checking = false);
     }
+  }
+
+  List<EmergencyContact> get _manualRecipients {
+    if (_sending || _sessionChanged) return const [];
+    final result = _result;
+    final contacts = _contacts ?? const <EmergencyContact>[];
+    if (result?.status == SosDeliveryState.noContacts) return const [];
+    if (result == null || result.recipients.isEmpty) {
+      return [
+        for (final contact in contacts)
+          if (EmergencyService.smsNumber(contact.phone) != null) contact,
+      ];
+    }
+    return [
+      for (final contact in contacts)
+        if ((result.recipients[contact.id] == SosDeliveryState.manualRequired ||
+                result.recipients[contact.id] == SosDeliveryState.failed ||
+                result.recipients[contact.id] == SosDeliveryState.unknown) &&
+            EmergencyService.smsNumber(contact.phone) != null)
+          contact,
+    ];
+  }
+
+  Future<void> _openMessages() async {
+    if (!_sameAccount || _composer == _ComposerState.opening) return;
+    final candidates = _manualRecipients;
+    final duplicatePossible = _result?.status == SosDeliveryState.unknown ||
+        candidates.any((contact) => _result?.recipients[contact.id] == SosDeliveryState.unknown);
+    final contact = await showCupertinoModalPopup<EmergencyContact>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Choose a contact to text'),
+        message: Text(duplicatePossible
+            ? 'NOVA could not verify the earlier request. A duplicate alert is possible. The message still needs your approval.'
+            : 'Your messaging app will ask you to send the text.'),
+        actions: [
+          for (final contact in candidates)
+            CupertinoActionSheetAction(
+              onPressed: () => Navigator.pop(ctx, contact),
+              child: Text(contact.name),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+      ),
+    );
+    if (contact == null || !_sameAccount || !_manualRecipients.any((item) => item.id == contact.id)) return;
+    setState(() => _composer = _ComposerState.opening);
+    var opened = false;
+    try {
+      opened = await _service.openMessages(contact).timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // An unavailable composer is displayed beside the call fallback.
+    }
+    if (_sameAccount) setState(() => _composer = opened ? _ComposerState.opened : _ComposerState.failed);
   }
 
   Future<void> _addContact() async {
@@ -124,9 +253,9 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => const _ContactEditor(),
+      builder: (_) => _ContactEditor(service: _service),
     );
-    if (added == true) _reloadContacts();
+    if (added == true && mounted) _reloadContacts();
   }
 
   Future<void> _deleteContact(EmergencyContact contact) async {
@@ -143,7 +272,9 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
     );
     if (ok != true) return;
     try {
-      await CareRepository.instance.deleteEmergencyContact(contact.id);
+      await _service.deleteContact(contact.id);
+      if (!_sameAccount) return;
+      setState(() => _contacts = _contacts?.where((item) => item.id != contact.id).toList());
       _reloadContacts();
     } catch (e) {
       if (mounted) showNovaToast(context, friendlyError(e));
@@ -165,18 +296,39 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
                 Semantics(header: true, child: Text('Emergency', style: NovaType.largeTitle.copyWith(color: c.textPrimary))),
                 const SizedBox(height: 2),
                 Text('Hold the button for 3 seconds to alert your contacts.', style: NovaType.subhead.copyWith(color: c.textSecondary)),
-                const SizedBox(height: 28),
-                Center(child: _buildSos(context)),
-                const SizedBox(height: 28),
+                const SizedBox(height: 20),
                 NovaButton(
                   label: 'Call 1990 ambulance',
                   kind: NovaButtonKind.destructive,
                   icon: CupertinoIcons.phone_fill,
-                  onPressed: () => callNumber(context, ambulanceNumber),
+                  onPressed: () => _call(ambulanceNumber),
                 ),
+                const SizedBox(height: 20),
+                Center(child: _buildSos(context)),
+                if (_manualRecipients.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  NovaButton(
+                    label: _composer == _ComposerState.opening ? 'Opening Messages…' : 'Open Messages',
+                    kind: NovaButtonKind.secondary,
+                    onPressed: _composer == _ComposerState.opening ? null : _openMessages,
+                  ),
+                ],
+                if (_composer == _ComposerState.opened || _composer == _ComposerState.failed)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Semantics(
+                      liveRegion: true,
+                      child: Text(
+                        _composer == _ComposerState.opened
+                            ? 'Manual sending required. Press Send in your messaging app. NOVA cannot confirm delivery.'
+                            : 'Could not open the SMS composer. Call 1990 or your contact directly.',
+                        style: NovaType.subhead.copyWith(color: c.textPrimary),
+                      ),
+                    ),
+                  ),
                 SectionLabel(
                   'Emergency contacts',
-                  trailing: Pressable(
+                  trailing: _sessionChanged ? null : Pressable(
                     onTap: _addContact,
                     semanticLabel: 'Add emergency contact',
                     child: SizedBox(
@@ -189,38 +341,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
                     ),
                   ),
                 ),
-                FutureBuilder<List<EmergencyContact>>(
-                  future: _contacts,
-                  builder: (context, snap) {
-                    if (snap.connectionState != ConnectionState.done) return const SkeletonCard(lines: 2);
-                    if (snap.hasError) return ErrorCard(message: friendlyError(snap.error!), onRetry: _reloadContacts);
-                    final contacts = snap.data!;
-                    if (contacts.isEmpty) {
-                      return EmptyStateCard(
-                        icon: CupertinoIcons.person_2,
-                        title: 'No emergency contacts yet',
-                        body: 'Add a family member or friend. They are the people NOVA alerts when you send an SOS.',
-                        actionLabel: 'Add a contact',
-                        onAction: _addContact,
-                      );
-                    }
-                    return NovaCard(
-                      padding: EdgeInsets.zero,
-                      child: Column(
-                        children: [
-                          for (var i = 0; i < contacts.length; i++) ...[
-                            if (i > 0) Divider(height: 0.5, thickness: 0.5, color: c.separator, indent: 64),
-                            _ContactRow(
-                              contact: contacts[i],
-                              onCall: () => callNumber(context, contacts[i].phone),
-                              onDelete: () => _deleteContact(contacts[i]),
-                            ),
-                          ],
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                _buildContacts(context),
                 const SizedBox(height: NovaSpace.gap),
                 Text(
                   'NOVA is not an emergency service. If you are in danger, call 1990 (ambulance) or 119 (police) straight away.',
@@ -236,37 +357,128 @@ class _EmergencyScreenState extends State<EmergencyScreen> with SingleTickerProv
     );
   }
 
+  Widget _buildContacts(BuildContext context) {
+    final c = context.nova;
+    final contacts = _contacts;
+    if (_sessionChanged) return const Text('Sign in again to access your emergency contacts.');
+    if (contacts == null) {
+      if (_contactsLoading) return const SkeletonCard(lines: 2);
+      return ErrorCard(
+        message: 'Contacts are unavailable and none are saved on this device. You can still call 1990.',
+        onRetry: _reloadContacts,
+      );
+    }
+    if (contacts.isEmpty) {
+      return EmptyStateCard(
+        icon: CupertinoIcons.person_2,
+        title: _usingSaved ? 'No emergency contacts saved on this device' : 'No emergency contacts yet',
+        body: _usingSaved
+            ? 'Connect to load your contacts. You can still call 1990.'
+            : 'Add a contact to use SOS messaging. You can still call 1990.',
+        actionLabel: _usingSaved ? 'Retry' : 'Add a contact',
+        onAction: _usingSaved ? _reloadContacts : _addContact,
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_usingSaved) ...[
+          Text('Showing emergency contacts saved on this device.', style: NovaType.subhead.copyWith(color: c.textSecondary)),
+          const SizedBox(height: 8),
+        ],
+        NovaCard(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              for (var i = 0; i < contacts.length; i++) ...[
+                if (i > 0) Divider(height: 0.5, thickness: 0.5, color: c.separator, indent: 64),
+                _ContactRow(
+                  contact: contacts[i],
+                  delivery: _result?.recipients[contacts[i].id],
+                  onCall: () => _call(contacts[i].phone),
+                  onDelete: () => _deleteContact(contacts[i]),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildSos(BuildContext context) {
     final c = context.nova;
-    switch (_phase) {
-      case _SosPhase.sending:
-        return _SosStatus(
-          icon: const CupertinoActivityIndicator(radius: 16),
-          title: 'Sending SOS…',
-          body: 'Alerting your emergency contacts.',
-        );
-      case _SosPhase.sent:
-        return _SosStatus(
-          icon: Icon(CupertinoIcons.checkmark_seal_fill, size: 56, color: c.success),
-          title: 'SOS sent',
-          body: '${_notified == 0 ? 'Your SOS was received. Your messages app opened with an alert ready: press Send' : '$_notified contact${_notified == 1 ? '' : 's'} notified'}'
-              ' at ${formatClock(_sentAt!)}.\nStay where you are if it is safe.',
-          action: NovaButton(
-            label: 'I\'m safe now',
-            kind: NovaButtonKind.secondary,
-            onPressed: () => setState(() => _phase = _SosPhase.idle),
-          ),
-        );
-      case _SosPhase.failed:
-        return _SosStatus(
-          icon: Icon(CupertinoIcons.exclamationmark_triangle_fill, size: 52, color: c.alert),
-          title: 'SOS could not be sent',
-          body: '${_failure ?? 'Something went wrong.'}\nCall 1990 or one of your contacts directly.',
-          action: NovaButton(label: 'Try again', onPressed: _confirmAndSend),
-        );
-      case _SosPhase.idle:
-        return _HoldButton(controller: _hold);
+    if (_sending) {
+      return const _SosStatus(
+        icon: CupertinoActivityIndicator(radius: 16),
+        title: 'Requesting SOS…',
+        body: 'You can call 1990 while NOVA checks the request.',
+      );
     }
+    final result = _result;
+    if (_sessionChanged) return const Text('Sign in again to request an SOS.');
+    if (result == null) return _HoldButton(controller: _hold);
+
+    final (title, description) = switch (result.status) {
+      SosDeliveryState.simulated => ('Simulation mode', 'NOVA did not send a real SMS. Open Messages to send a text yourself.'),
+      SosDeliveryState.manualRequired => ('Manual sending required', 'Open Messages and press Send yourself.'),
+      SosDeliveryState.queued => ('SOS queued', 'The provider accepted or is processing the request. Delivery is unconfirmed.'),
+      SosDeliveryState.sent => ('SOS sent to the carrier', 'The provider reports sending it. Delivery is unconfirmed.'),
+      SosDeliveryState.delivered => ('SOS delivered', 'The provider confirmed delivery to every recipient.'),
+      SosDeliveryState.partialFailure => ('Some SOS alerts failed', 'Check the recipient statuses. Call or manually text the contacts whose alerts failed.'),
+      SosDeliveryState.failed => ('SOS failed', 'The automated alert failed. Call 1990 or contact someone directly.'),
+      SosDeliveryState.noContacts => ('No emergency contacts', 'No contact was alerted. Call 1990 or add a contact.'),
+      SosDeliveryState.unknown => ('SOS status unknown', 'NOVA could not verify the request. Call 1990 or contact someone directly.'),
+    };
+    final counts = [
+      for (final (state, label) in [
+        (SosDeliveryState.delivered, 'delivered'),
+        (SosDeliveryState.sent, 'sent to carrier'),
+        (SosDeliveryState.queued, 'queued'),
+        (SosDeliveryState.failed, 'failed'),
+        (SosDeliveryState.unknown, 'unverified'),
+        (SosDeliveryState.manualRequired, 'manual sending required'),
+      ])
+        if (result.count(state) > 0) '${result.count(state)} $label',
+    ];
+    final delivered = result.status == SosDeliveryState.delivered;
+    return Semantics(
+      liveRegion: true,
+      child: _SosStatus(
+        icon: Icon(
+          delivered ? CupertinoIcons.checkmark_seal_fill : CupertinoIcons.info_circle,
+          size: 48,
+          color: delivered ? c.success : c.alert,
+        ),
+        title: title,
+        body: [
+          description,
+          if (counts.isNotEmpty) counts.join(' · '),
+          if (_statusUnavailable) 'Delivery status could not be refreshed. The last known status is shown.',
+        ].join('\n'),
+        action: Column(
+          children: [
+            if (result.canRefresh && result.attemptId != null)
+              NovaButton(
+                label: _checking ? 'Checking delivery…' : 'Check delivery status',
+                kind: NovaButtonKind.secondary,
+                onPressed: _checking ? null : _checkStatus,
+              ),
+            NovaButton(
+              label: 'Back to SOS',
+              kind: NovaButtonKind.plain,
+              onPressed: () {
+                _poll?.cancel();
+                setState(() {
+                  _result = null;
+                  _composer = _ComposerState.idle;
+                });
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -369,8 +581,9 @@ class _SosStatus extends StatelessWidget {
 }
 
 class _ContactRow extends StatelessWidget {
-  const _ContactRow({required this.contact, required this.onCall, required this.onDelete});
+  const _ContactRow({required this.contact, required this.delivery, required this.onCall, required this.onDelete});
   final EmergencyContact contact;
+  final SosDeliveryState? delivery;
   final VoidCallback onCall;
   final VoidCallback onDelete;
 
@@ -399,6 +612,18 @@ class _ContactRow extends StatelessWidget {
                   [if (contact.relationship != null) contact.relationship!, contact.phone].join(' · '),
                   style: NovaType.footnote.copyWith(color: c.textSecondary),
                 ),
+                if (delivery != null)
+                  Text(
+                    switch (delivery!) {
+                      SosDeliveryState.delivered => 'Delivery confirmed',
+                      SosDeliveryState.sent => 'Sent to carrier · delivery unconfirmed',
+                      SosDeliveryState.queued => 'Queued',
+                      SosDeliveryState.failed => 'Alert failed',
+                      SosDeliveryState.manualRequired => 'Manual sending required',
+                      _ => 'Status unverified',
+                    },
+                    style: NovaType.footnote.copyWith(color: c.textSecondary),
+                  ),
               ],
             ),
           ),
@@ -420,7 +645,9 @@ class _ContactRow extends StatelessWidget {
 }
 
 class _ContactEditor extends StatefulWidget {
-  const _ContactEditor();
+  const _ContactEditor({required this.service});
+
+  final EmergencyService service;
 
   @override
   State<_ContactEditor> createState() => _ContactEditorState();
@@ -444,7 +671,7 @@ class _ContactEditorState extends State<_ContactEditor> {
   Future<void> _save() async {
     final name = _name.text.trim();
     final phone = _phone.text.trim();
-    if (name.isEmpty || phone.replaceAll(RegExp(r'[^0-9]'), '').length < 7) {
+    if (name.isEmpty || EmergencyService.smsNumber(phone) == null) {
       setState(() => _error = 'Enter a name and a valid phone number.');
       return;
     }
@@ -454,7 +681,7 @@ class _ContactEditorState extends State<_ContactEditor> {
     });
     final navigator = Navigator.of(context);
     try {
-      await CareRepository.instance.addEmergencyContact(name: name, phone: phone, relationship: _relationship.text.trim());
+      await widget.service.addContact(name: name, phone: phone, relationship: _relationship.text.trim());
       navigator.pop(true);
     } catch (e) {
       if (mounted) {

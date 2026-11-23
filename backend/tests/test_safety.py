@@ -82,3 +82,12 @@ def test_a_person_in_trouble_is_still_an_emergency_even_in_a_question():
     for text in ["What should I do? my mother is unconscious", "what is happening, I have chest pain",
                  "what do I do, he is not breathing"]:
         assert safety.detect_emergency(text) == "medical", text
+
+
+def test_clinical_range_exception_does_not_apply_to_phone_fields_or_chat():
+    assert safety.clinical_text("WBC reference 4000 - 11000") == "WBC reference 4000 - 11000"
+    assert safety.clinical_text("WBC reference 4000-11000") == "WBC reference 4000-11000"
+    assert safety.redact("4000 - 11000") == "[phone]"
+    assert safety.clinical_text("Contact 4000 - 11000") == "Contact [phone]"
+    assert safety.clinical_text("Phone: 4000 - 11000\nWBC reference 4000 - 11000") == "WBC reference 4000 - 11000"
+    assert safety.clinical_text("Call office phone: 4000 - 11000") == "Call office [phone]"
