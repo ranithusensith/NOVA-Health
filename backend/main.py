@@ -9,18 +9,20 @@ The backend reads the user's data with the user's OWN token (see db.py), so
 row-level security applies and no secret key is needed here.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Annotated, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -409,7 +411,27 @@ async def scan_food(image: UploadFile = File(...), user: dict = Depends(current_
 
 
 SOS_COOLDOWN_SECONDS = 30
+SOS_STATUS_TTL_SECONDS = 30 * 60
 _sos_last: dict[str, float] = {}
+_sos_sending: set[str] = set()
+
+
+@dataclass
+class _SosAttempt:
+    id: uuid.UUID
+    expires_at: float
+    report: notify.SendReport
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+_sos_attempts: dict[str, _SosAttempt] = {}
+
+
+def _prune_sos(now: float) -> None:
+    for user_id in [key for key, attempt in _sos_attempts.items() if attempt.expires_at <= now]:
+        del _sos_attempts[user_id]
+    for user_id in [key for key, started in _sos_last.items() if now - started >= SOS_COOLDOWN_SECONDS]:
+        del _sos_last[user_id]
 
 
 class EmergencyBody(BaseModel):
@@ -417,36 +439,79 @@ class EmergencyBody(BaseModel):
 
 
 @app.post("/api/v1/emergency/trigger")
-async def emergency_trigger(body: EmergencyBody | None = None, user: dict = Depends(current_user),
-                            db: UserDB = Depends(get_db)):
-    """Alerts the user's emergency contacts by SMS. Never needs the AI model."""
+async def emergency_trigger(
+    background: BackgroundTasks, body: EmergencyBody | None = None,
+    user: dict = Depends(current_user), db: UserDB = Depends(get_db),
+):
+    """Submit an SOS and report only the provider states known at this point."""
     now = time.monotonic()
-    last = _sos_last.get(user["id"])
-    if last is not None and now - last < SOS_COOLDOWN_SECONDS:
-        raise ApiError(429, "RATE_LIMITED", "An SOS was just sent. Wait a few seconds, or call 1990 now.")
-    _sos_last[user["id"]] = now
-
+    _prune_sos(now)
+    user_id = user["id"]
+    if user_id in _sos_sending or user_id in _sos_last:
+        raise ApiError(429, "RATE_LIMITED", "An SOS was recently requested. Check its status or call 1990 now.")
+    _sos_sending.add(user_id)
     try:
-        contacts = await db.select("emergency_contacts", "name,phone")
-        profile = await db.select("profiles", "full_name", limit=1)
-    except DBError as e:
-        raise ApiError(502, "AI_UNAVAILABLE", "Could not read your emergency contacts. Call 1990 or your contacts directly.") from e
+        data = await _submit_sos(db, user_id, body)
+    finally:
+        _sos_sending.discard(user_id)
+    background.add_task(_audit_sos, db, user_id, data["contacts_total"], data["status"])
+    return {"data": data}
 
-    name = profile[0].get("full_name") if profile else None
-    report = await notify.send_sos(contacts, notify.build_message(name, body.note if body else None))
 
-    try:  # best effort: the audit table may not allow user inserts
-        await db.insert("audit_log", {"user_id": user["id"], "action": "sos_triggered",
-                                      "detail": {"contacts": report.total, "sent": report.sent, "provider": notify.provider()}})
+async def _submit_sos(db: UserDB, user_id: str, body: EmergencyBody | None) -> dict:
+    try:
+        contacts = await asyncio.wait_for(
+            db.select("emergency_contacts", "id,phone", filters={"user_id": f"eq.{db.user_id}"}), timeout=4,
+        )
+    except (DBError, ValueError, TimeoutError) as e:
+        raise ApiError(502, "SOS_UNAVAILABLE", "Could not read your emergency contacts. Call 1990 or your contacts directly.") from e
+
+    mode = notify.provider()
+    if not contacts:
+        return notify.SendReport(mode, []).payload()
+
+    name = None
+    if mode == "twilio":
+        try:
+            profile = await asyncio.wait_for(
+                db.select("profiles", "full_name", filters={"id": f"eq.{db.user_id}"}, limit=1), timeout=2,
+            )
+            name = profile[0].get("full_name") if profile else None
+        except (DBError, ValueError, TimeoutError):
+            pass  # The alert can still use the generic message.
+    _sos_last[user_id] = time.monotonic()
+    report = await notify.send_sos(contacts, notify.build_message(name, body.note if body else None), mode=mode)
+    data = report.payload()
+    now = time.monotonic()
+    _sos_last[user_id] = now
+    if report.can_refresh:
+        attempt = _SosAttempt(uuid.uuid4(), now + SOS_STATUS_TTL_SECONDS, report)
+        _sos_attempts[user_id] = attempt
+        data["attempt_id"] = str(attempt.id)
+    return data
+
+
+async def _audit_sos(db: UserDB, user_id: str, count: int, status: str) -> None:
+    try:
+        await db.insert("audit_log", {
+            "user_id": user_id,
+            "action": "sos_triggered",
+            "detail": {"contacts": count, "status": status, "provider": notify.provider()},
+        })
     except DBError:
         pass
 
-    return {"data": {
-        "status": "triggered",
-        "contacts_total": report.total,
-        "contacts_notified": report.sent,
-        "failed": report.failed,
-        "delivered": report.sent > 0,
-        "simulated": report.simulated,
-        "ambulance": "1990",
-    }}
+
+@app.get("/api/v1/emergency/{attempt_id}/status")
+async def emergency_status(attempt_id: uuid.UUID, user: dict = Depends(current_user)):
+    _prune_sos(time.monotonic())
+    attempt = _sos_attempts.get(user["id"])
+    if attempt is None or attempt.id != attempt_id:
+        raise ApiError(404, "SOS_STATUS_UNAVAILABLE", "Delivery status is unavailable for this SOS.")
+    async with attempt.lock:
+        refreshed = await notify.refresh_delivery(attempt.report)
+        return {"data": {
+            **attempt.report.payload(),
+            "attempt_id": str(attempt.id),
+            "status_check_unavailable": not refreshed,
+        }}

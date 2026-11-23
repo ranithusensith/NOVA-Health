@@ -257,13 +257,14 @@ class CareRepository {
     return [for (final r in rows) EmergencyContact.fromJson(r)];
   }
 
-  Future<void> addEmergencyContact({required String name, required String phone, String? relationship}) async {
-    await _db.from('emergency_contacts').insert({
+  Future<EmergencyContact> addEmergencyContact({required String name, required String phone, String? relationship}) async {
+    final row = await _db.from('emergency_contacts').insert({
       'user_id': _uid,
       'name': name,
       'phone': phone,
       'relationship': (relationship == null || relationship.isEmpty) ? null : relationship,
-    });
+    }).select('id,name,phone,relationship').single();
+    return EmergencyContact.fromJson(row);
   }
 
   Future<void> deleteEmergencyContact(String id) async {

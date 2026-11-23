@@ -57,7 +57,11 @@ class ApiClient {
     throw ApiException(message ?? 'Request failed (${streamed.statusCode}).');
   }
 
-  Future<Map<String, dynamic>> _postJson(String path, Map<String, dynamic> payload) async {
+  Future<Map<String, dynamic>> _postJson(
+    String path,
+    Map<String, dynamic> payload, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
     final http.Response res;
     try {
       res = await http
@@ -66,7 +70,7 @@ class ApiClient {
             headers: {..._authHeaders, 'Content-Type': 'application/json'},
             body: jsonEncode(payload),
           )
-          .timeout(const Duration(seconds: 60));
+          .timeout(timeout);
     } catch (_) {
       throw ApiException('Cannot reach the server. Is the backend running?');
     }
@@ -157,12 +161,12 @@ class ApiClient {
     return (data['reply'] as String?) ?? '';
   }
 
-  Future<Map<String, dynamic>> _getJson(String path) async {
+  Future<Map<String, dynamic>> _getJson(String path, {Duration timeout = const Duration(seconds: 60)}) async {
     final http.Response res;
     try {
       res = await http
           .get(Uri.parse('${AppConfig.apiUrl}$path'), headers: _authHeaders)
-          .timeout(const Duration(seconds: 60));
+          .timeout(timeout);
     } catch (_) {
       throw ApiException('Cannot reach the server. Is the backend running?');
     }
@@ -193,29 +197,79 @@ class ApiClient {
     return (data['report'] as String?) ?? '';
   }
 
-  /// POST /api/v1/emergency/trigger → how many contacts were notified.
-  Future<int> triggerEmergency() async => (await triggerEmergencyDetailed()).notified;
-
-  /// Same call, with the details. `delivered` is false when the server only logged the
-  /// alert (no SMS service set up), so the app must open the phone's messages app instead.
   Future<EmergencyResult> triggerEmergencyDetailed() async {
     if (AppConfig.useMockApi) {
       await Future<void>.delayed(const Duration(milliseconds: 800));
-      return const EmergencyResult(notified: 0, total: 0, delivered: false);
+      return const EmergencyResult(status: SosDeliveryState.simulated);
     }
-    final data = await _postJson('/api/v1/emergency/trigger', const {});
-    return EmergencyResult(
-      notified: (data['contacts_notified'] as num?)?.toInt() ?? 0,
-      total: (data['contacts_total'] as num?)?.toInt() ?? 0,
-      delivered: data['delivered'] == true,
-    );
+    return EmergencyResult.fromJson(await _postJson(
+      '/api/v1/emergency/trigger', const {}, timeout: const Duration(seconds: 12),
+    ));
+  }
+
+  Future<EmergencyResult> emergencyStatus(String attemptId) async {
+    return EmergencyResult.fromJson(await _getJson(
+      '/api/v1/emergency/${Uri.encodeComponent(attemptId)}/status', timeout: const Duration(seconds: 10),
+    ));
   }
 }
 
-/// What the server did with an SOS.
+enum SosDeliveryState {
+  simulated('simulated'),
+  manualRequired('manual_required'),
+  queued('queued'),
+  sent('sent'),
+  delivered('delivered'),
+  partialFailure('partial_failure'),
+  failed('failed'),
+  noContacts('no_contacts'),
+  unknown('unknown');
+
+  const SosDeliveryState(this.value);
+  final String value;
+
+  static SosDeliveryState fromValue(Object? value) =>
+      values.firstWhere((state) => state.value == value, orElse: () => unknown);
+}
+
 class EmergencyResult {
-  const EmergencyResult({required this.notified, required this.total, required this.delivered});
-  final int notified;
-  final int total;
-  final bool delivered;
+  const EmergencyResult({
+    required this.status,
+    this.recipients = const {},
+    this.attemptId,
+    this.canRefresh = false,
+    this.statusCheckUnavailable = false,
+  });
+
+  final SosDeliveryState status;
+  final Map<String, SosDeliveryState> recipients;
+  final String? attemptId;
+  final bool canRefresh;
+  final bool statusCheckUnavailable;
+
+  int count(SosDeliveryState state) => recipients.values.where((value) => value == state).length;
+
+  factory EmergencyResult.fromJson(Map<String, dynamic> json) {
+    final raw = json['recipients'];
+    if (raw is! List) return const EmergencyResult(status: SosDeliveryState.unknown);
+    final recipients = <String, SosDeliveryState>{};
+    for (final row in raw) {
+      if (row is Map && row['contact_id'] is String) {
+        recipients[row['contact_id'] as String] = SosDeliveryState.fromValue(row['status']);
+      }
+    }
+    var status = SosDeliveryState.fromValue(json['status']);
+    if (recipients.length != json['contacts_total'] || recipients.length != raw.length ||
+        (status == SosDeliveryState.delivered &&
+            (recipients.isEmpty || recipients.values.any((state) => state != SosDeliveryState.delivered)))) {
+      status = SosDeliveryState.unknown;
+    }
+    return EmergencyResult(
+      status: status,
+      recipients: recipients,
+      attemptId: json['attempt_id'] is String ? json['attempt_id'] as String : null,
+      canRefresh: json['can_refresh'] == true,
+      statusCheckUnavailable: json['status_check_unavailable'] == true,
+    );
+  }
 }
