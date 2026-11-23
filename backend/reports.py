@@ -29,9 +29,9 @@ async def build_daily_data(db, day: date) -> dict:
     heart = await _day_rows(db, "wearable_samples", "value,recorded_at,context", "recorded_at", day,
                             {"metric": "eq.heart_rate"})
     taken = await _day_rows(db, "medication_logs", "status,taken_at", "taken_at", day)
-    meds = (await tools.get_medications(db, {}))["medications"]
+    meds = (await tools.get_medications(db, {}, day=day))["medications"]
 
-    scheduled = sum(len(m["times"]) for m in meds)
+    scheduled = sum(tools.scheduled_doses_on(m, day) for m in meds)
     return {
         "date": day.isoformat(),
         "water_ml": sum(int(r.get("amount_ml") or 0) for r in water),

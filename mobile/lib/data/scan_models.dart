@@ -5,6 +5,7 @@ class ScanMedication {
     this.dosage,
     this.frequency,
     this.durationDays,
+    this.durationText,
     this.instructions,
   });
 
@@ -12,6 +13,7 @@ class ScanMedication {
   final String? dosage;
   final String? frequency;
   final int? durationDays;
+  final String? durationText;
   final String? instructions;
 
   factory ScanMedication.fromJson(Map<String, dynamic> j) => ScanMedication(
@@ -19,8 +21,20 @@ class ScanMedication {
         dosage: j['dosage'] as String?,
         frequency: j['frequency'] as String?,
         durationDays: (j['duration_days'] as num?)?.toInt(),
+        durationText: j['duration_text'] as String?,
         instructions: j['instructions'] as String?,
       );
+
+  /// A date suggestion is available only for a single, explicit number of days.
+  int? get suggestedCourseDays {
+    final match = RegExp(r'^(?:for\s+)?([0-9]{1,3})\s+days?\.?$', caseSensitive: false)
+        .firstMatch(durationText?.trim() ?? '');
+    final days = int.tryParse(match?.group(1) ?? '');
+    return days != null && days >= 1 && days <= 365 ? days : null;
+  }
+
+  bool get mentionsAsNeeded => RegExp(r'\b(?:p\s*\.?\s*r\s*\.?\s*n|as needed|when needed|as required)\b', caseSensitive: false)
+      .hasMatch('${frequency ?? ''} ${instructions ?? ''}');
 }
 
 /// A safety note from the backend's fixed medicine rules (allergy conflicts and so on).

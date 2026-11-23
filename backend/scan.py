@@ -41,15 +41,6 @@ def _clamp_confidence(v):
     return max(0.0, min(1.0, x))
 
 
-def _to_int_or_none(v):
-    if v is None or isinstance(v, bool):
-        return None
-    try:
-        return int(float(str(v).strip().split()[0]))
-    except (ValueError, IndexError):
-        return None
-
-
 def _to_float(v, default=0.0):
     try:
         return float(v)
@@ -61,11 +52,12 @@ def _to_float(v, default=0.0):
 class Medication(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     dosage: str | None = Field(default=None, max_length=60)
-    frequency: str | None = Field(default=None, max_length=80)
+    frequency: str | None = Field(default=None, max_length=160)
     duration_days: int | None = Field(default=None, ge=1, le=365)
-    instructions: str | None = Field(default=None, max_length=200)
+    instructions: str | None = Field(default=None, max_length=500)
+    duration_text: str | None = Field(default=None, max_length=80)
 
-    @field_validator("name", "dosage", "frequency", "instructions", mode="before")
+    @field_validator("name", "dosage", "frequency", "instructions", "duration_text", mode="before")
     @classmethod
     def _strip(cls, v):
         if v is None:
@@ -76,8 +68,11 @@ class Medication(BaseModel):
     @field_validator("duration_days", mode="before")
     @classmethod
     def _days(cls, v):
-        n = _to_int_or_none(v)
-        return n if n is not None and 1 <= n <= 365 else None
+        match = re.fullmatch(r"([0-9]{1,3})(?:\s+days?)?", str(v).strip(), re.IGNORECASE)
+        if not match:
+            return None
+        days = int(match[1])
+        return days if 1 <= days <= 365 else None
 
 
 class PrescriptionResult(BaseModel):
@@ -114,14 +109,16 @@ PRESCRIPTION_PROMPT = """Read this image and return exactly this JSON shape:
     {
       "name": "medicine name",
       "dosage": "strength per unit, for example 500 mg",
-      "frequency": "plain words, for example 3 times a day",
-      "duration_days": integer number of days or null,
-      "instructions": "short note such as after meals, or null"
+      "frequency": "exact timing or as-needed wording as printed, or null",
+      "duration_text": "exact course length or end-date wording as printed, or null",
+      "duration_days": integer only when a single duration in days is explicitly written, otherwise null,
+      "instructions": "other directions for use as printed, or null"
     }
   ],
   "confidence": number from 0 to 1 for how legible and certain the reading is,
   "notes": "one short sentence about anything unclear, or null"
 }
+Keep abbreviations, qualifiers, and ranges as printed. Do not resolve shorthand, calculate clock times, or convert a duration range to a single number.
 Set is_prescription to false and medications to [] if the image is not a prescription or medicine label."""
 
 FOOD_SYSTEM = (

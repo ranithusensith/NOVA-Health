@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nova_health/data/care_models.dart';
 import 'package:nova_health/data/reminder_plan.dart';
 
 Map<String, dynamic> med(String name, List<String> times,
@@ -82,5 +83,65 @@ void main() {
     final plans = buildReminderPlan(meds, now);
     expect(plans.length, 60);
     expect(plans.first.daily, isTrue);
+  });
+
+  test('inclusive course dates count calendar days across a month boundary', () {
+    final leapDay = DateTime(2028, 2, 29);
+    expect(inclusiveCourseEnd(leapDay, 1), leapDay);
+    expect(inclusiveCourseEnd(leapDay, 3), DateTime(2028, 3, 2));
+  });
+
+  test('notification preference leaves reviewed and legacy dose timelines intact', () {
+    for (final plan in [null, {'kind': 'daily'}]) {
+      final row = {
+        ...med('Daily', ['08:10'], start: '2026-10-25', end: '2026-10-25'),
+        'prescription_plan': plan,
+        'reminders_enabled': false,
+      };
+      final medicine = MedicationRecord.fromJson(row);
+      expect(buildSchedule([medicine], {}, now).single.at, DateTime(2026, 10, 25, 8, 10));
+      expect(medicine.dosesOn(DateTime(2026, 10, 26)), isEmpty);
+      expect(buildReminderPlan([row], now), isEmpty);
+    }
+  });
+
+  test('PRN and no-fixed-schedule rows do not generate doses even with leftover clock times', () {
+    for (final kind in ['as_needed', 'unscheduled']) {
+      final row = {
+        ...med('Unscheduled', ['20:00']),
+        'prescription_plan': {'kind': kind},
+      };
+      expect(MedicationRecord.fromJson(row).dosesOn(now), isEmpty);
+      expect(buildReminderPlan([row], now), isEmpty);
+    }
+  });
+
+  test('non-divisor intervals continue across midnight and stop after the inclusive last day', () {
+    final first = DateTime(2026, 10, 25, 22);
+    final row = {
+      ...med('Interval', [], start: '2026-10-25', end: '2026-10-26'),
+      'prescription_plan': {
+        'kind': 'interval',
+        'first_dose_at': first.toUtc().toIso8601String(),
+        'interval_minutes': 420,
+      },
+    };
+    final notices = buildReminderPlan([row], now);
+    expect(notices.every((plan) => !plan.daily), isTrue);
+    final expected = [for (var i = 0; i < 4; i++) first.add(Duration(hours: 7 * i))];
+    expect(notices.map((plan) => plan.at), expected);
+    final medicine = MedicationRecord.fromJson(row);
+    expect(medicine.dosesOn(DateTime(2026, 10, 26)), expected.skip(1));
+    expect(medicine.dosesOn(DateTime(2026, 10, 27)), isEmpty);
+  });
+
+  test('a future scanned daily schedule uses dated notifications so it cannot fire early', () {
+    final row = {
+      ...med('Future scan', ['19:00'], start: '2026-10-27'),
+      'prescription_plan': {'kind': 'daily'},
+    };
+    final notices = buildReminderPlan([row], now, maxDays: 2);
+    expect(notices.every((plan) => !plan.daily), isTrue);
+    expect(notices.map((plan) => plan.at), [DateTime(2026, 10, 27, 19), DateTime(2026, 10, 28, 19)]);
   });
 }

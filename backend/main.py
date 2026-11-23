@@ -16,7 +16,7 @@ import os
 import time
 import uuid
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from dotenv import load_dotenv
@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Reques
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import AwareDatetime, BaseModel, Field, StringConstraints, model_validator
 
 load_dotenv()
 
@@ -182,14 +182,50 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class PrescriptionPlan(BaseModel):
+    kind: Literal["daily", "interval", "as_needed", "unscheduled"]
+    dosage_text: str | None = Field(default=None, max_length=60)
+    frequency: str | None = Field(default=None, max_length=160)
+    instructions: str | None = Field(default=None, max_length=500)
+    duration_text: str | None = Field(default=None, max_length=80)
+    interval_minutes: int | None = Field(default=None, strict=True, ge=1, le=525600)
+    first_dose_at: AwareDatetime | None = None
+
+
 class PrescriptionMedicationDraft(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
     dosage: Annotated[str, StringConstraints(strip_whitespace=True, max_length=60)] | None = None
     times: list[Annotated[str, StringConstraints(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]] = Field(
-        max_length=4,
+        max_length=24,
     )
     start_date: date
-    end_date: date | None = None
+    end_date: date | None
+    prescription_plan: PrescriptionPlan
+    reminders_enabled: bool = Field(strict=True)
+    schedule_confirmed: bool = Field(strict=True)
+
+    @model_validator(mode="after")
+    def validate_schedule(self):
+        plan = self.prescription_plan
+        if not self.schedule_confirmed:
+            raise ValueError("Confirm the schedule and course dates.")
+        if self.end_date is not None and self.end_date < self.start_date:
+            raise ValueError("The last day must be on or after the first day.")
+        if plan.kind == "daily":
+            if not self.times or len(set(self.times)) != len(self.times):
+                raise ValueError("Choose distinct daily dose times.")
+        elif self.times:
+            raise ValueError("Only a daily schedule can have fixed dose times.")
+        if plan.kind == "interval":
+            if plan.interval_minutes is None or plan.first_dose_at is None:
+                raise ValueError("Confirm the interval and first dose time.")
+            if plan.first_dose_at.date() != self.start_date:
+                raise ValueError("The first dose must be on the course start date.")
+        elif plan.interval_minutes is not None or plan.first_dose_at is not None:
+            raise ValueError("Only an interval schedule can have an interval and first dose time.")
+        if self.reminders_enabled and plan.kind in ("as_needed", "unscheduled"):
+            raise ValueError("Reminders require a scheduled dose.")
+        return self
 
 
 class PrescriptionConfirmation(BaseModel):
@@ -292,7 +328,7 @@ async def scan_prescription(
 @app.post("/api/v1/scan/prescription/confirm")
 async def confirm_prescription(body: PrescriptionConfirmation, db: UserDB = Depends(get_db)):
     """Recheck the final draft and write the checked rows in one batch."""
-    medications = [m.model_dump(mode="json") for m in body.medications]
+    medications = [m.model_dump(mode="json", exclude={"schedule_confirmed"}) for m in body.medications]
     safety_check = await prescription_safety(db, medications)
     if safety_check["safety_check_status"] != "completed":
         return {"data": {**safety_check, "activated": False}}

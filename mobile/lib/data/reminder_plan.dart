@@ -1,3 +1,5 @@
+import 'care_models.dart';
+
 /// One notification to schedule. Pure data, so it can be unit tested without a phone.
 class ReminderPlan {
   const ReminderPlan({required this.at, required this.daily, required this.names});
@@ -20,27 +22,10 @@ class ReminderPlan {
   }
 }
 
-(int, int)? _parseHm(Object? value) {
-  if (value is! String) return null;
-  final parts = value.trim().split(':');
-  if (parts.length != 2) return null;
-  final h = int.tryParse(parts[0]);
-  final m = int.tryParse(parts[1]);
-  if (h == null || m == null || h < 0 || h > 23 || m < 0 || m > 59) return null;
-  return (h, m);
-}
-
-DateTime? _date(Object? value) {
-  if (value is! String || value.isEmpty) return null;
-  final d = DateTime.tryParse(value);
-  return d == null ? null : DateTime(d.year, d.month, d.day);
-}
-
 /// Works out which notifications to schedule from the user's confirmed medicines.
 ///
-/// - No end date: one notification that repeats daily at each time.
-/// - With an end date: one notification per day until the end date (at most [maxDays] days ahead),
-///   so reminders stop on their own when the course finishes.
+/// - Legacy ongoing medicines retain their repeating notifications.
+/// - Reviewed schedules use dated notifications, including across offset changes.
 /// - Medicines due at the same moment share one notification.
 /// - Capped at [maxItems] (iOS keeps at most 64 pending notifications).
 List<ReminderPlan> buildReminderPlan(
@@ -63,34 +48,31 @@ List<ReminderPlan> buildReminderPlan(
   }
 
   for (final m in meds) {
-    final name = ((m['name'] as String?) ?? '').trim();
-    if (name.isEmpty) continue;
-    final dose = ((m['dosage'] as String?) ?? '').trim();
-    final label = dose.isEmpty ? name : '$name $dose';
-    final start = _date(m['start_date']);
-    final end = _date(m['end_date']);
-    if (end != null && end.isBefore(today)) continue;
+    if ((m['name'] as String? ?? '').trim().isEmpty) continue;
+    final medicine = MedicationRecord.fromJson(m);
+    if (!medicine.remindersEnabled) continue;
+    final start = medicine.startDate;
+    final end = medicine.endDate;
+    final futureStart = start != null && start.isAfter(today);
+    final firstDay = futureStart ? start : today;
+    final repeatsDaily = end == null && medicine.prescriptionPlan == null;
+    if (repeatsDaily) {
+      for (final at in medicine.dosesOn(firstDay)) {
+        final next = at.isAfter(now) ? at : DateTime(at.year, at.month, at.day + 1, at.hour, at.minute);
+        add(next, true, medicine.label);
+      }
+      continue;
+    }
 
-    for (final t in (m['times'] as List? ?? const [])) {
-      final hm = _parseHm(t);
-      if (hm == null) continue;
-
-      if (end == null) {
-        var first = DateTime(today.year, today.month, today.day, hm.$1, hm.$2);
-        if (start != null && start.isAfter(today)) {
-          first = DateTime(start.year, start.month, start.day, hm.$1, hm.$2);
-        }
-        if (!first.isAfter(now)) {
-          first = DateTime(first.year, first.month, first.day + 1, hm.$1, hm.$2);
-        }
-        add(first, true, label);
-      } else {
-        var day = (start != null && start.isAfter(today)) ? start : today;
-        for (var i = 0; i < maxDays && !day.isAfter(end); i++) {
-          final at = DateTime(day.year, day.month, day.day, hm.$1, hm.$2);
-          if (at.isAfter(now)) add(at, false, label);
-          day = DateTime(day.year, day.month, day.day + 1);
-        }
+    var count = 0;
+    for (var i = 0; i < maxDays && count < maxItems; i++) {
+      final day = DateTime(firstDay.year, firstDay.month, firstDay.day + i);
+      if (end != null && day.isAfter(end)) break;
+      for (final at in medicine.dosesOn(day)) {
+        if (!at.isAfter(now)) continue;
+        add(at, false, medicine.label);
+        count++;
+        if (count == maxItems) break;
       }
     }
   }
