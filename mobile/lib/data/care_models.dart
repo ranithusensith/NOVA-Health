@@ -7,6 +7,15 @@ String ymd(DateTime d) =>
 
 DateTime dayOf(DateTime d) => DateTime(d.year, d.month, d.day);
 
+DateTime calendarDay(DateTime d, int offset) => DateTime(d.year, d.month, d.day + offset);
+
+int calendarDaysBetween(DateTime from, DateTime to) =>
+    DateTime.utc(to.year, to.month, to.day).difference(DateTime.utc(from.year, from.month, from.day)).inDays;
+
+DateTime _wallClock(DateTime d) => DateTime.utc(d.year, d.month, d.day, d.hour, d.minute);
+
+String localTimestamp(DateTime d) => _wallClock(d).toIso8601String().replaceFirst('Z', '');
+
 /// A course of one day starts and ends on the same calendar date.
 DateTime inclusiveCourseEnd(DateTime start, int days) =>
     DateTime(start.year, start.month, start.day + days - 1);
@@ -149,9 +158,10 @@ class MedicationRecord {
     final plan = prescriptionPlan;
     if (plan != null && !plan.timing.isScheduled) return;
     if (plan?.timing != PrescriptionTiming.interval) {
+      final seen = <({int hour, int minute})>{};
       for (final time in times) {
         final clock = parseClock(time);
-        if (clock != null) {
+        if (clock != null && seen.add(clock)) {
           final at = DateTime(start.year, start.month, start.day, clock.hour, clock.minute);
           if (at.hour == clock.hour && at.minute == clock.minute) yield at;
         }
@@ -198,15 +208,47 @@ class MedicationRecord {
   }
 }
 
-enum DoseState { taken, due, upcoming, missed }
+enum DoseState { taken, due, upcoming, missed, unverified }
+
+typedef DoseKey = ({String medicationId, String occurrenceKey});
+
+/// The identity and original scheduled time carried through logging and Undo.
+class DoseOccurrence {
+  DoseOccurrence({
+    required this.accountId,
+    required String medicationId,
+    required DateTime at,
+    required bool followsLocalClock,
+  })  : scheduledAt = at.toUtc(),
+        scheduledLocalAt = followsLocalClock ? localTimestamp(at) : null,
+        key = (
+          medicationId: medicationId,
+          occurrenceKey: followsLocalClock
+              ? 'daily:${_wallClock(at).microsecondsSinceEpoch}'
+              : 'interval:${at.microsecondsSinceEpoch}',
+        );
+
+  final String accountId;
+  final DateTime scheduledAt;
+  final String? scheduledLocalAt;
+  final DoseKey key;
+}
 
 /// One scheduled dose today.
 class DoseSlot {
-  const DoseSlot({required this.medication, required this.at, required this.state});
+  const DoseSlot({
+    required this.medication,
+    required this.at,
+    required this.occurrence,
+    required this.state,
+    this.logId,
+  });
 
   final MedicationRecord medication;
   final DateTime at;
+  final DoseOccurrence occurrence;
   final DoseState state;
+  final String? logId;
 
   /// Morning / Afternoon / Evening group for the timeline.
   String get period => at.hour < 12 ? 'Morning' : (at.hour < 17 ? 'Afternoon' : 'Evening');
@@ -217,21 +259,29 @@ class DoseSlot {
 const doseEarlyWindow = Duration(minutes: 30);
 const doseLateWindow = Duration(minutes: 60);
 
-/// Builds today's dose timeline. [takenCounts] is how many doses of each
-/// medication were logged today: the earliest slots are treated as taken.
+/// Builds today's timeline by matching only explicitly identified occurrences.
 List<DoseSlot> buildSchedule(
   List<MedicationRecord> meds,
-  Map<String, int> takenCounts,
-  DateTime now,
-) {
+  Map<DoseKey, String> takenLogs,
+  DateTime now, {
+  required String accountId,
+  Set<String> unassignedMedicationIds = const {},
+}) {
   final slots = <DoseSlot>[];
   for (final m in meds) {
-    var taken = takenCounts[m.id] ?? 0;
     for (final at in m.dosesOn(now)) {
+      final occurrence = DoseOccurrence(
+        accountId: accountId,
+        medicationId: m.id,
+        at: at,
+        followsLocalClock: m.prescriptionPlan?.timing != PrescriptionTiming.interval,
+      );
+      final logId = takenLogs[occurrence.key];
       final DoseState state;
-      if (taken > 0) {
+      if (logId != null) {
         state = DoseState.taken;
-        taken--;
+      } else if (unassignedMedicationIds.contains(m.id)) {
+        state = DoseState.unverified;
       } else if (now.isAfter(at.add(doseLateWindow))) {
         state = DoseState.missed;
       } else if (now.isAfter(at.subtract(doseEarlyWindow))) {
@@ -239,7 +289,7 @@ List<DoseSlot> buildSchedule(
       } else {
         state = DoseState.upcoming;
       }
-      slots.add(DoseSlot(medication: m, at: at, state: state));
+      slots.add(DoseSlot(medication: m, at: at, occurrence: occurrence, state: state, logId: logId));
     }
   }
   slots.sort((a, b) => a.at.compareTo(b.at));
@@ -268,6 +318,7 @@ class DayStats {
     this.moodLevel,
     this.dosesTaken = 0,
     this.dosesScheduled = 0,
+    this.unassignedDoseLogs = 0,
     this.calories = 0,
   });
 
@@ -279,6 +330,7 @@ class DayStats {
   final int? moodLevel;
   final int dosesTaken;
   final int dosesScheduled;
+  final int unassignedDoseLogs;
   final int calories;
 }
 

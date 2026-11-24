@@ -81,7 +81,8 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
     final parts = <double>[
       (s.waterMl / prefs.waterGoalMl).clamp(0.0, 1.0),
       ((s.sleepHours ?? 0) / prefs.sleepGoalHours).clamp(0.0, 1.0),
-      if (s.dosesScheduled > 0) (s.dosesTaken / s.dosesScheduled).clamp(0.0, 1.0),
+      if (s.dosesScheduled > 0 && s.unassignedDoseLogs == 0)
+        (s.dosesTaken / s.dosesScheduled).clamp(0.0, 1.0),
       if (s.moodLevel != null) s.moodLevel! / 4,
     ];
     return (parts.reduce((a, b) => a + b) / parts.length * 100).round();
@@ -96,7 +97,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
     if ((s.sleepHours ?? 0) < prefs.sleepGoalHours) {
       out.add('Start winding down 30 minutes earlier tonight to get closer to ${prefs.sleepGoalHours.toStringAsFixed(prefs.sleepGoalHours % 1 == 0 ? 0 : 1)} hours of sleep.');
     }
-    if (s.dosesScheduled > 0 && s.dosesTaken < s.dosesScheduled) {
+    if (s.unassignedDoseLogs == 0 && s.dosesScheduled > 0 && s.dosesTaken < s.dosesScheduled) {
       out.add('Keep reminders on so no dose is missed tomorrow.');
     }
     if (s.moodLevel != null && s.moodLevel! <= 1) {
@@ -182,7 +183,11 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
       ..writeln('Day score: ${_score(s)}/100')
       ..writeln('Water: ${(s.waterMl / 1000).toStringAsFixed(1)} L')
       ..writeln('Sleep: ${s.sleepHours == null ? 'not logged' : '${s.sleepHours!.toStringAsFixed(1)} h'}')
-      ..writeln('Medications: ${s.dosesTaken} of ${s.dosesScheduled} doses')
+      ..writeln('Medications: ${s.dosesTaken} of ${s.dosesScheduled} doses');
+    if (s.unassignedDoseLogs > 0) {
+      text.writeln('${s.unassignedDoseLogs} dose log(s) without a scheduled time');
+    }
+    text
       ..writeln()
       ..writeln(data.summary ?? '')
       ..writeln()
@@ -304,10 +309,12 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
         color: c.primary,
         title: 'Medications',
         value: s.dosesScheduled == 0 ? 'None scheduled' : '${s.dosesTaken} of ${s.dosesScheduled} doses',
-        progress: s.dosesScheduled == 0 ? null : s.dosesTaken / s.dosesScheduled,
-        insight: s.dosesScheduled == 0
-            ? 'No medication reminders on this day.'
-            : (s.dosesTaken >= s.dosesScheduled ? 'Every dose taken.' : '${s.dosesScheduled - s.dosesTaken} dose(s) not logged.'),
+        progress: s.dosesScheduled == 0 || s.unassignedDoseLogs > 0 ? null : s.dosesTaken / s.dosesScheduled,
+        insight: s.unassignedDoseLogs > 0
+            ? '${s.unassignedDoseLogs} dose log(s) without a scheduled time.'
+            : (s.dosesScheduled == 0
+                ? 'No medication reminders on this day.'
+                : (s.dosesTaken >= s.dosesScheduled ? 'Every dose taken.' : '${s.dosesScheduled - s.dosesTaken} dose(s) not logged.')),
       ),
       const SizedBox(height: 12),
       NovaCard(

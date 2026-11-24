@@ -93,10 +93,11 @@ class HealthRepository {
       final pick = upcoming.isNotEmpty ? upcoming.first : doses.first;
       next = Medication(name: pick.name, dose: pick.dose, time: formatClock(pick.at));
     } else if (meds.isNotEmpty) {
+      final medicine = MedicationRecord.fromJson(meds.first);
       next = Medication(
-        name: meds.first['name'] as String,
-        dose: (meds.first['dosage'] as String?) ?? '',
-        time: 'no dose time set',
+        name: medicine.name,
+        dose: medicine.dosage ?? '',
+        time: medicine.prescriptionPlan?.timing == PrescriptionTiming.asNeeded ? 'As needed' : 'No dose time set',
       );
     }
 

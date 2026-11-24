@@ -32,9 +32,9 @@ class _MedicationsData {
   final List<MedicationRecord> meds;
 }
 
-class _MedicationsScreenState extends State<MedicationsScreen> {
+class _MedicationsScreenState extends State<MedicationsScreen> with WidgetsBindingObserver {
   late Future<_MedicationsData> _future = _fetch();
-  final Set<String> _busy = {};
+  final Set<DoseKey> _busy = {};
 
   Future<_MedicationsData> _fetch() async {
     final repo = CareRepository.instance;
@@ -45,13 +45,20 @@ class _MedicationsScreenState extends State<MedicationsScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     HealthRepository.changes.addListener(_reload);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     HealthRepository.changes.removeListener(_reload);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _reload();
   }
 
   void _reload() {
@@ -60,12 +67,14 @@ class _MedicationsScreenState extends State<MedicationsScreen> {
   }
 
   Future<void> _take(DoseSlot slot) async {
-    final id = slot.medication.id;
+    final id = slot.occurrence.key;
     if (_busy.contains(id)) return;
     setState(() => _busy.add(id));
     try {
-      await CareRepository.instance.logDose(id);
-      if (mounted) showNovaToast(context, '${slot.medication.name} marked as taken');
+      final inserted = await CareRepository.instance.logDose(slot.occurrence);
+      if (mounted) {
+        showNovaToast(context, inserted == null ? 'This dose was already logged' : '${slot.medication.name} marked as taken');
+      }
     } catch (e) {
       debugPrint('logDose failed: $e');
       if (mounted) showNovaToast(context, friendlyError(e));
@@ -75,11 +84,13 @@ class _MedicationsScreenState extends State<MedicationsScreen> {
   }
 
   Future<void> _undo(DoseSlot slot) async {
-    final id = slot.medication.id;
+    final id = slot.occurrence.key;
+    final logId = slot.logId;
+    if (logId == null) return;
     if (_busy.contains(id)) return;
     setState(() => _busy.add(id));
     try {
-      await CareRepository.instance.undoLastDose(id);
+      await CareRepository.instance.undoDose(slot.occurrence, logId);
     } catch (e) {
       debugPrint('undoLastDose failed: $e');
       if (mounted) showNovaToast(context, friendlyError(e));
@@ -186,6 +197,13 @@ class _MedicationsScreenState extends State<MedicationsScreen> {
         data.schedule.isEmpty ? 'No scheduled doses today' : '$taken of ${data.schedule.length} doses taken today',
         style: NovaType.subhead.copyWith(color: c.textSecondary),
       ),
+      if (data.schedule.any((slot) => slot.state == DoseState.unverified)) ...[
+        const SizedBox(height: NovaSpace.gap),
+        const _Banner(
+          icon: CupertinoIcons.info_circle,
+          text: 'An earlier log has no scheduled time. Check your dosing records before logging another dose.',
+        ),
+      ],
       if (missed > 0) ...[
         const SizedBox(height: NovaSpace.gap),
         _Banner(
@@ -206,7 +224,7 @@ class _MedicationsScreenState extends State<MedicationsScreen> {
                   if (i > 0) Divider(height: 0.5, thickness: 0.5, color: c.separator, indent: 64),
                   _DoseRow(
                     slot: groups[period]![i],
-                    busy: _busy.contains(groups[period]![i].medication.id),
+                    busy: _busy.contains(groups[period]![i].occurrence.key),
                     onTake: () => _take(groups[period]![i]),
                     onUndo: () => _undo(groups[period]![i]),
                   ),
@@ -271,9 +289,11 @@ class _DoseRow extends StatelessWidget {
       DoseState.due => (CupertinoIcons.bell_fill, c.primary, 'Due now'),
       DoseState.upcoming => (CupertinoIcons.clock, c.primary, 'Upcoming'),
       DoseState.missed => (CupertinoIcons.exclamationmark_circle_fill, c.alert, 'Missed'),
+      DoseState.unverified => (CupertinoIcons.info_circle, c.warningContent, 'Unverified'),
     };
+    final time = formatDoseClock(slot);
     return Semantics(
-      label: '${slot.medication.label} at ${formatClock(slot.at)}, $status',
+      label: '${slot.medication.label} at $time, $status',
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
         child: Row(
@@ -291,7 +311,7 @@ class _DoseRow extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(slot.medication.label, style: NovaType.headline.copyWith(color: c.textPrimary)),
-                    Text('${formatClock(slot.at)} · $status', style: NovaType.footnote.copyWith(color: c.textSecondary)),
+                    Text('$time · $status', style: NovaType.footnote.copyWith(color: c.textSecondary)),
                   ],
                 ),
               ),
@@ -300,7 +320,7 @@ class _DoseRow extends StatelessWidget {
               const Padding(padding: EdgeInsets.all(12), child: CupertinoActivityIndicator())
             else if (slot.state == DoseState.taken)
               NovaButton(label: 'Undo', kind: NovaButtonKind.plain, expand: false, height: 44, onPressed: onUndo)
-            else
+            else if (slot.state != DoseState.unverified)
               NovaButton(
                 label: 'Take',
                 kind: slot.state == DoseState.upcoming ? NovaButtonKind.secondary : NovaButtonKind.primary,
