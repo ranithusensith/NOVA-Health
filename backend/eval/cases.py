@@ -17,21 +17,20 @@ PRESCRIPTIONS = {
 # ---- lab reports
 REPORTS = {
     "fake_lab_report_1.jpg": [
-        {"test": "Haemoglobin", "value": 11.2, "unit": "g/dL", "ref_low": 13.0, "ref_high": 17.0, "flag": "low"},
-        {"test": "Red blood cells", "value": 4.6, "unit": "10^6/uL", "ref_low": 4.5, "ref_high": 5.9, "flag": "normal"},
-        {"test": "White blood cells", "value": 7400, "unit": "/uL", "ref_low": 4000, "ref_high": 11000, "flag": "normal"},
-        {"test": "Platelets", "value": 390, "unit": "10^3/uL", "ref_low": 150, "ref_high": 450, "flag": "normal"},
-        {"test": "Haematocrit", "value": 35.1, "unit": "%", "ref_low": 40, "ref_high": 52, "flag": "low"},
-        {"test": "MCV", "value": 82, "unit": "fL", "ref_low": 80, "ref_high": 100, "flag": "normal"},
+        {"test": "Haemoglobin", "value_text": "11.2", "unit": "g/dL", "reference_text": "13.0 - 17.0"},
+        {"test": "Red blood cells", "value_text": "4.6", "unit": "10^6/uL", "reference_text": "4.5 - 5.9"},
+        {"test": "White blood cells", "value_text": "7,400", "unit": "/uL", "reference_text": "4,000 - 11,000"},
+        {"test": "Platelets", "value_text": "390", "unit": "10^3/uL", "reference_text": "150 - 450"},
+        {"test": "Haematocrit", "value_text": "35.1", "unit": "%", "reference_text": "40 - 52"},
+        {"test": "MCV", "value_text": "82", "unit": "fL", "reference_text": "80 - 100"},
     ],
     "fake_lab_report_2.jpg": [
-        {"test": "Total cholesterol", "value": 5.9, "unit": "mmol/L", "ref_low": None, "ref_high": 5.2, "flag": "high"},
-        {"test": "LDL cholesterol", "value": 4.1, "unit": "mmol/L", "ref_low": None, "ref_high": 3.0, "flag": "high"},
-        {"test": "HDL cholesterol", "value": 1.3, "unit": "mmol/L", "ref_low": 1.0, "ref_high": None, "flag": "normal"},
-        {"test": "Triglycerides", "value": 1.6, "unit": "mmol/L", "ref_low": None, "ref_high": 1.7, "flag": "normal"},
-        {"test": "Fasting glucose", "value": 5.4, "unit": "mmol/L", "ref_low": 3.9, "ref_high": 5.6, "flag": "normal"},
-        {"test": "Urine protein", "value": None, "value_text": "Negative", "unit": None,
-         "ref_low": None, "ref_high": None, "flag": "unknown"},
+        {"test": "Total cholesterol", "value_text": "5.9", "unit": "mmol/L", "reference_text": "< 5.2"},
+        {"test": "LDL cholesterol", "value_text": "4.1", "unit": "mmol/L", "reference_text": "< 3.0"},
+        {"test": "HDL cholesterol", "value_text": "1.3", "unit": "mmol/L", "reference_text": "> 1.0"},
+        {"test": "Triglycerides", "value_text": "1.6", "unit": "mmol/L", "reference_text": "< 1.7"},
+        {"test": "Fasting glucose", "value_text": "5.4", "unit": "mmol/L", "reference_text": "3.9 - 5.6"},
+        {"test": "Urine protein", "value_text": "Negative", "unit": None, "reference_text": "Negative"},
     ],
 }
 

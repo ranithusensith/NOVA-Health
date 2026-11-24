@@ -18,6 +18,7 @@ Run each file in order and stop on any SQL error. Apply the full sequence before
 | 6 | [006_patient_isolation.sql](../backend/changes/006_patient_isolation.sql) | Remove excess client grants, restrict legacy chat history to the cleanup RPC, and validate any missing lab, consent, and chat owner relationships. |
 | 7 | [007_atomic_health_profile.sql](../backend/changes/007_atomic_health_profile.sql) | Save the caller's confirmed allergies, profile, and onboarding completion in one transaction. |
 | 8 | [008_medication_dose_occurrences.sql](../backend/changes/008_medication_dose_occurrences.sql) | Store scheduled dose times and enforce one log per identifiable occurrence. |
+| 9 | [009_lab_result_fidelity.sql](../backend/changes/009_lab_result_fidelity.sql) | Preserve reviewed lab result text, printed references and flags, and unknown report dates. Enforce exact numeric projections for reviewed rows. |
 
 Supabase Auth owns account identities. A signup creates a profile with the account UUID, the optional display name, empty conditions and goals, and onboarding marked incomplete. Health details remain unset until the user enters them. Existing profile fields retain their saved values. AI processing consent still requires its own explicit opt-in.
 
@@ -33,6 +34,7 @@ Check the migration history and review a schema-only snapshot against these file
 - On legacy dose logs, `006` removes an immediate medication-ID-only foreign key with the default `NO ACTION` behavior when the validated owner-aware cascade is present. That redundant constraint could block a legacy account deletion before the cascade ran.
 - Apply `007` before rolling out the Flutter client that calls `save_health_profile`. Earlier clients keep their existing direct-write behavior until upgraded.
 - Apply `008` after `007` and before updating Flutter or FastAPI reports. It adds a stored generated column and indexes on `medication_logs`, which can rewrite and lock that table. Verify the schema change and PostgREST schema cache on a disposable copy. Existing dose logs stay in place.
+- Apply `009` after `008` and before updating FastAPI or Flutter. Verify PostgREST can see the new columns in a disposable copy. Existing lab rows retain their values and dates.
 - Run the upgrade during a maintenance window. The signup trigger installation and constraint validation acquire locks. Take a backup before applying changes to an existing project.
 
 ## Application database contract
@@ -44,7 +46,7 @@ Check the migration history and review a schema-only snapshot against these file
 | Tracking and reports | Flutter logs water, sleep, mood and meals. FastAPI reads these tables and `symptom_logs`. Time indexes support per-account history. |
 | Wearables and cycle | Flutter reads, imports and deletes `wearable_samples` and manages `period_logs`. FastAPI reads summaries. The unique wearable key matches Flutter's duplicate-safe import. |
 | Emergency | Flutter manages `emergency_contacts`. FastAPI reads contacts and inserts an SOS record into `audit_log`. |
-| Lab results | Flutter saves, lists and removes `lab_results`. FastAPI reads summaries. |
+| Lab results | Flutter submits reviewed observations to FastAPI, which inserts the batch using the signed-in account's token. Flutter lists and removes its own records. Daily reports and assistant summaries read the corrected observations. |
 | AI privacy | FastAPI reads and updates account-scoped `ai_processing_consents` and invokes `delete_legacy_ai_chats()`. The fresh schema has no chat history table. |
 
 ## Isolated SQL verification
@@ -72,16 +74,21 @@ PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/007_atomic_health_profile.sql \
   -f backend/changes/008_medication_dose_occurrences.sql
 
+psql -X -v ON_ERROR_STOP=1 -v h6_before_migration=1 -f backend/changes/tests/lab_result_fidelity.sql
+PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
+  -f backend/changes/009_lab_result_fidelity.sql
+
 psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/verify.sql \
   -f backend/changes/tests/patient_isolation.sql \
   -f backend/changes/tests/atomic_health_profile.sql \
-  -f backend/changes/tests/medication_dose_occurrences.sql
+  -f backend/changes/tests/medication_dose_occurrences.sql \
+  -f backend/changes/tests/lab_result_fidelity.sql
 ```
 
 Start the test session as the disposable cluster administrator. The fixtures simulate the Auth schema, the Auth insert role, PostgREST roles and default API grants. They verify PostgreSQL access and integrity. Use separate loopback HTTP services or a disposable Supabase environment for token and HTTP integration.
 
-To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture, apply `006` through `008`, and run all four verification files.
+To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` commands above, then run all five verification files.
 
 ## H2 patient isolation and verification limits
 
@@ -109,3 +116,9 @@ A daily dose is identified by its medication and local calendar date and clock t
 Logging ignores a duplicate occurrence and preserves the original row. Undo identifies the account, medication, occurrence and log row, so re-logging a dose creates a new row that an old Undo action cannot remove. There is no undo tombstone. A log request arriving after a successful Undo can re-create that occurrence.
 
 Earlier app versions can still write timestamp-only logs. Because those logs cannot identify a scheduled dose, the current app leaves them unassigned and shows affected unconfirmed slots as unverified for that day. As-needed and unscheduled medications stay outside the scheduled-dose timeline. The app derives interval history dates from the device time zone, while FastAPI reports use its configured time zone. Changes to a medication's schedule can leave historical occurrences without a matching current slot.
+
+## H6 reviewed lab results
+
+`POST /api/v1/scan/report/confirm` validates the reviewed rows, checks ownership against the signed-in account and inserts them in a single batch. Reviewed result text is authoritative. Numeric `value` is populated only for an exact decimal. The printed range and flag are stored as text, and the original extracted result is retained separately when available. A missing report date stays `NULL`. Daily reports use only results with the selected report date. Medical records include undated results, and the assistant can read them when lab results are selected for that reply. The existing assistant redaction still applies to all outbound values.
+
+The database retains existing owner-scoped permissions and direct writes for older clients. The H6 constraint applies to `scan_reviewed` rows. Earlier client saves may contain inferred flags or fallback dates. Migration `009` leaves those records as stored because the original printed information may be unavailable.

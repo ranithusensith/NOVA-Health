@@ -50,10 +50,13 @@ class FakeDB:
         if table == "lab_results":
             return [{
                 "test_name": "Haemoglobin",
-                "value": 12.1,
+                "value": None,
                 "unit": "g/dL",
                 "reported_on": "2025-01-04",
-                "value_text": None,
+                "value_text": "<=12.10",
+                "extracted_value_text": "<=12.50",
+                "reference_text": ">=13.0",
+                "reported_flag": "L",
                 "test_notes": "unexpected id",
             }]
         return []
@@ -232,8 +235,9 @@ def test_assistant_only_uses_selected_tools_and_minimizes_results(harness):
     ])
     assert chat(client, health_data=["lab_results"]).status_code == 200
     final_prompt = json.dumps(requests[-1])
-    assert "Haemoglobin" in final_prompt and "12.1" in final_prompt
-    assert all(secret not in final_prompt for secret in ("2025-01-04", "unexpected id", "get_medications", BODY_MARKER))
+    assert all(text in final_prompt for text in ("Haemoglobin", "<=12.10", ">=13.0", 'L'))
+    assert all(secret not in final_prompt for secret in
+               ("2025-01-04", "<=12.50", "unexpected id", "get_medications", BODY_MARKER))
     assert [table for table, _, _ in db.selections if table not in ("profiles", "ai_processing_consents")] == ["lab_results"]
 
 
@@ -244,7 +248,8 @@ def test_assistant_only_uses_selected_tools_and_minimizes_results(harness):
         }],
     }, "Paracetamol 500 mg every 8 hours until 2025-12-10"),
     ("report", {
-        "is_report": True, "results": [{"test": "Haemoglobin", "value": 12.1, "unit": "g/dL"}],
+        "is_report": True, "results": [{"test": "Haemoglobin", "value_text": "12.1", "unit": "g/dL",
+                                        "source_line": "Haemoglobin 12.1 g/dL 13.0 - 17.0"}],
     }, "Haemoglobin 12.1 g/dL 13.0 - 17.0"),
 ])
 def test_medical_scans_only_send_reviewed_scrubbed_text(harness, kind, result, clinical):

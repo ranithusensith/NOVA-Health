@@ -59,7 +59,8 @@ class MockModel:
         await authorize()
         llm.USAGE.append({"in": 1200, "out": 150})
         prompt, separator, encoded_text = prompt.partition(CLINICAL_TEXT_SEPARATOR)
-        name = self.by_text[json.loads(encoded_text)] if separator else None
+        reviewed_text = json.loads(encoded_text) if separator else None
+        name = self.by_text[reviewed_text] if separator else None
         if prompt == scan.PRESCRIPTION_PROMPT:
             exp = cases.PRESCRIPTIONS.get(name)
             if not exp:
@@ -77,10 +78,11 @@ class MockModel:
                 return {"is_report": False, "results": [], "confidence": 0.3}
             rows = []
             for e in exp:
+                line = next((line for line in reviewed_text.splitlines() if line.startswith(e["test"] + " ")), None)
                 rows.append({
-                    "test": e["test"], "value": self._maybe(e["value"], (e["value"] or 0) + 3),
-                    "value_text": e.get("value_text"), "unit": e["unit"],
-                    "ref_low": e["ref_low"], "ref_high": e["ref_high"],
+                    "source_line": line, "test": e["test"],
+                    "value_text": self._maybe(e["value_text"], "999"), "unit": e["unit"],
+                    "reference_text": e["reference_text"],
                 })
             return {"is_report": True, "results": rows, "confidence": 0.9}
         if "USER QUESTION\n" in prompt:

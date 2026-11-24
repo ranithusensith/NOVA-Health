@@ -107,7 +107,11 @@ class _ScanCameraScreenState extends State<ScanCameraScreen> {
         result = ScanResultScreen(scan: scan, imageBytes: bytes);
       } else if (mode == ScanMode.report) {
         final report = await api.scanReport(text ?? '');
-        result = ReportResultScreen(scan: report);
+        result = ReportResultScreen(
+          scan: report,
+          imageBytes: bytes,
+          onConfirm: (date, rows) => api.confirmLabReport(report, owner, date, rows),
+        );
       } else {
         final food = await api.scanFood(file);
         result = FoodResultScreen(scan: food, imageBytes: bytes);

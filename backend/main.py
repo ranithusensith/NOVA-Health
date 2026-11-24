@@ -23,7 +23,7 @@ from typing import Annotated, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -33,6 +33,7 @@ load_dotenv()
 
 import ai_privacy  # noqa: E402
 import agent  # noqa: E402  (after load_dotenv so env vars are set)
+import lab_results  # noqa: E402
 import llm  # noqa: E402
 import notify  # noqa: E402
 import reports  # noqa: E402
@@ -92,7 +93,7 @@ async def privacy_error_handler(_: Request, exc: ai_privacy.PrivacyError):
 async def private_ai_responses(request: Request, call_next):
     path = request.url.path
     private = path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/"))
-    if not private or path.endswith("/confirm"):
+    if not private or path == "/api/v1/scan/prescription/confirm":
         return await call_next(request)
     try:
         response = await call_next(request)
@@ -388,6 +389,7 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
 
 @app.get("/api/v1/reports/daily")
 async def daily_report(
+    response: Response,
     date_: date | None = Query(default=None, alias="date"),
     user: dict = Depends(current_user),
     db: UserDB = Depends(get_db),
@@ -397,6 +399,7 @@ async def daily_report(
         data = await reports.daily_report(db, day)
     except DBError as e:
         raise ApiError(502, "SERVER_ERROR", e.message)
+    response.headers["Cache-Control"] = "no-store"
     return {"data": data}
 
 
@@ -494,7 +497,10 @@ async def scan_report(
 ):
     text, identifiers = await _reviewed_clinical_text(body, user, db)
     try:
-        result = await scan.scan_report(text, identifiers=identifiers, authorize=partial(ai_privacy.require_consent, db))
+        result = await scan.scan_report(
+            text, identifiers=identifiers, today=tools.local_today(),
+            authorize=partial(ai_privacy.require_consent, db),
+        )
     except scan.ScanError as e:
         raise ApiError(422, "SCAN_FAILED", str(e)) from None
     except llm.LLMError as e:
@@ -508,6 +514,33 @@ async def scan_report(
         "notes": result.notes,
         "needs_user_confirmation": True,
     }}
+
+
+@app.post("/api/v1/scan/report/confirm")
+async def confirm_lab_report(body: lab_results.ReviewedLabReport, db: UserDB = Depends(get_db)):
+    if str(body.expected_user_id) != db.user_id:
+        raise ApiError(403, "FORBIDDEN", "Sign in to the account that opened this report.")
+    if not body.reviewed:
+        raise ApiError(400, "REVIEW_REQUIRED", "Check the results against your report before saving.")
+    date_text = lab_results.report_date(body.report_date, tools.local_today())
+    if body.report_date is not None and date_text is None:
+        raise ApiError(400, "INVALID_INPUT", "Use a valid report date or leave it unknown.")
+    rows = [
+        {
+            **row.database_row(user_id=db.user_id, date_text=date_text, report_type=body.report_type),
+            # One atomic insert with stable IDs prevents duplicate batches on retry.
+            "id": str(uuid.uuid5(body.scan_id, f"nova-lab:{db.user_id}:{index}")),
+        }
+        for index, row in enumerate(body.results)
+    ]
+    try:
+        await db.insert("lab_results", rows)
+    except DBError:
+        raise ApiError(
+            502, "LAB_SAVE_UNVERIFIED",
+            "Could not verify the save. Check Medical records before trying again.",
+        ) from None
+    return {"data": {"saved": len(rows)}}
 
 
 @app.post("/api/v1/scan/food")

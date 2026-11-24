@@ -318,6 +318,34 @@ Response `200`:
 
 Note: scan results must be confirmed by the user before being saved as medications.
 
+### Lab report review
+
+`POST /api/v1/scan/report` takes the same reviewed-text payload as prescription extraction. Its response includes `scan_id`, optional `report_type` and `report_date`, and draft `results`. Each draft includes `test`, `value_text`, `unit`, `reference_text` and `reported_flag`. A missing or unverified field is `null`. Keep comparison operators in `value_text`.
+
+Send the selected and corrected rows to `POST /api/v1/scan/report/confirm` using the signed-in account's token.
+
+```json
+{
+  "scan_id": "b1f2c3d4-0000-4000-8000-000000000003",
+  "expected_user_id": "b1f2c3d4-0000-4000-8000-000000000001",
+  "reviewed": true,
+  "report_type": "Synthetic lab report",
+  "report_date": null,
+  "results": [
+    {
+      "test": "Sample analyte",
+      "value_text": "<=0.40",
+      "extracted_value_text": "<=0.50",
+      "unit": "mg/L",
+      "reference_text": "<0.30",
+      "reported_flag": "H"
+    }
+  ]
+}
+```
+
+Supply 1–60 results and a confirmed date in `YYYY-MM-DD` format or `null`. The server assigns ownership and derives any exact numeric values. Success returns `{"data":{"saved":1}}`. Confirmation stays within NOVA and does not call the AI provider. If a save returns `LAB_SAVE_UNVERIFIED`, check Medical records. Retrying the same scan ID does not create a duplicate batch.
+
 ### 6.6 Assistant chat
 
 ```

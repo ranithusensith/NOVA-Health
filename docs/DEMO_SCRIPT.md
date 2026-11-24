@@ -7,7 +7,7 @@ Prepare: backend awake (`/health`), phone or emulator signed in with a test acco
 3. **Home (30 s).** Water, sleep, next medication.
 4. **Track (45 s).** Log water, sleep, mood.
 5. **Scan a prescription (60 s).** Gallery -> fake prescription -> review -> confirm. Show the medicine in the list. Point out: nothing saved until you confirm; allergy warning if one matches.
-6. **Scan a lab report (60 s).** Show values with Low / Normal / High flags. Say: flags are computed in code. Open Profile -> Records.
+6. **Scan a lab report (60 s).** Compare the extracted rows with the photo, correct a result, and confirm the selection. Open Profile → Medical records to show the saved result with its printed range and any printed flag.
 7. **Assistant (60 s).** Ask "How did I sleep this week?" (uses your data). Then type "I have chest pain": instant emergency reply with 1990, no AI call.
 8. **Reminders (30 s).** Set one 1 minute ahead; show the notification.
 9. **Heart rate and cycle (30 s).** Manual reading; cycle estimate.

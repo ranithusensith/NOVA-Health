@@ -87,6 +87,12 @@ def score_report(expected: list[dict], got: list[dict]) -> dict:
     pairs, missed, extra = match_items(expected, got, "test")
     fields = {"value": 0, "unit": 0, "range": 0, "flag": 0}
     for e, g in pairs:
+        if "reference_text" in e:
+            fields["value"] += g.get("value_text") == e["value_text"]
+            fields["unit"] += g.get("unit") == e["unit"]
+            fields["range"] += g.get("reference_text") == e["reference_text"]
+            fields["flag"] += g.get("reported_flag") == e.get("reported_flag")
+            continue
         if e.get("value") is None:
             fields["value"] += same_text(e.get("value_text"), g.get("value_text"))
         else:

@@ -1,56 +1,103 @@
-import 'package:flutter/cupertino.dart';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../data/health_repository.dart';
-import '../data/lab_repository.dart';
 import '../data/profile_models.dart';
 import '../data/scan_models.dart';
+import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
-import '../widgets/glass.dart';
-import '../widgets/lab_flag_chip.dart';
-import '../widgets/pressable.dart';
 import 'scan_camera_screen.dart';
 
-/// Lab report scan result. The user ticks the rows to keep; nothing is saved
-/// until they confirm. Flags come from the printed reference ranges.
+/// Review what was printed before any lab result is saved.
 class ReportResultScreen extends StatefulWidget {
-  const ReportResultScreen({super.key, required this.scan});
+  const ReportResultScreen({
+    super.key,
+    required this.scan,
+    required this.onConfirm,
+    this.imageBytes,
+  });
 
   final ReportScan scan;
+  final Uint8List? imageBytes;
+  final Future<int> Function(DateTime?, List<LabResultDraft>) onConfirm;
 
   @override
   State<ReportResultScreen> createState() => _ReportResultScreenState();
 }
 
 class _ReportResultScreenState extends State<ReportResultScreen> {
+  late final List<LabResultDraft> _rows = List.of(widget.scan.results);
+  late DateTime? _reportDate = widget.scan.reportDate;
   bool _saving = false;
+  bool _reviewed = false;
 
-  int get _selected => widget.scan.results.where((r) => r.include).length;
+  int get _selected => _rows.where((row) => row.include).length;
 
   Future<void> _confirm() async {
-    if (_saving) return;
-    final messenger = ScaffoldMessenger.of(context);
-    final navigator = Navigator.of(context);
-    if (_selected == 0) {
-      messenger.showSnackBar(const SnackBar(content: Text('Tick at least one result to save.')));
+    if (_saving || !_reviewed) return;
+    final rows = _rows.where((row) => row.include).toList();
+    if (rows.isEmpty || rows.any((row) => row.valueText == null)) {
+      _message('Enter a result for each included row, or leave that row out.');
       return;
     }
     setState(() => _saving = true);
     try {
-      final saved = await LabRepository.instance.save(widget.scan);
-      HealthRepository.notifyChanged();
-      navigator.popUntil((r) => r.isFirst);
-      messenger.showSnackBar(SnackBar(content: Text('$saved ${saved == 1 ? 'result' : 'results'} saved to Medical records')));
+      final saved = await widget.onConfirm(_reportDate, rows);
+      if (!mounted) return;
+      if (saved > 0) HealthRepository.notifyChanged();
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.of(context).popUntil((route) => route.isFirst);
+      messenger.showSnackBar(SnackBar(
+          content: Text(saved == 0
+              ? 'Demo review finished.'
+              : '$saved ${saved == 1 ? 'result' : 'results'} saved to Medical records')));
+    } on ApiException catch (error) {
+      if (mounted) _message(error.message);
     } catch (_) {
+      if (mounted) {
+        _message(
+            'Could not verify the save. Check Medical records before trying again.');
+      }
+    } finally {
       if (mounted) setState(() => _saving = false);
-      messenger.showSnackBar(const SnackBar(
-        content: Text('Could not verify that the lab results were saved. Check Medical records before trying again.'),
-      ));
     }
   }
 
+  void _message(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<void> _edit(int index) async {
+    final updated = await showDialog<LabResultDraft>(
+      context: context,
+      builder: (_) => _EditLabResult(row: _rows[index]),
+    );
+    if (updated == null || !mounted) return;
+    setState(() {
+      _rows[index] = updated;
+      _reviewed = false;
+    });
+  }
+
+  Future<void> _pickDate() async {
+    final today = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _reportDate ?? today,
+      firstDate: DateTime(1900),
+      lastDate: today.isBefore(_reportDate ?? today) ? _reportDate! : today,
+    );
+    if (date == null || !mounted) return;
+    setState(() {
+      _reportDate = date;
+      _reviewed = false;
+    });
+  }
+
   void _retake() {
+    if (_saving) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         fullscreenDialog: true,
@@ -62,162 +109,209 @@ class _ReportResultScreenState extends State<ReportResultScreen> {
   @override
   Widget build(BuildContext context) {
     final c = context.nova;
-    final pad = MediaQuery.paddingOf(context);
-    final scan = widget.scan;
-    final lowConfidence = scan.confidence < 0.7;
-    final flagged = scan.results.where((r) => r.flag == 'low' || r.flag == 'high').length;
-
+    final date = _reportDate;
+    final image = widget.imageBytes;
     return Scaffold(
       backgroundColor: c.background,
-      body: Stack(
+      appBar: AppBar(title: const Text('Review lab results')),
+      body: ListView(
+        padding: const EdgeInsets.all(NovaSpace.margin),
         children: [
-          ListView(
-            padding: EdgeInsets.fromLTRB(NovaSpace.margin, pad.top + 64, NovaSpace.margin, pad.bottom + 190),
-            children: [
-              Semantics(
-                header: true,
-                child: Text('Check the results', style: NovaType.largeTitle.copyWith(color: c.textPrimary)),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                [
-                  if (scan.reportType != null) scan.reportType!,
-                  if (scan.reportDate != null) formatDate(scan.reportDate!),
-                ].join(' · '),
-                style: NovaType.subhead.copyWith(color: c.textSecondary),
-              ),
-              const SizedBox(height: NovaSpace.gap),
-              if (lowConfidence) ...[
-                NovaCard(
-                  tone: NovaCardTone.tinted,
-                  child: Row(
-                    children: [
-                      Icon(CupertinoIcons.exclamationmark_triangle_fill, size: 22, color: c.warningContent),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'The photo was hard to read. Compare each number with your report before saving.',
-                          style: NovaType.subhead.copyWith(color: c.textPrimary),
-                        ),
-                      ),
-                    ],
-                  ),
+          if (widget.scan.reportType case final type?)
+            Text(type, style: NovaType.headline.copyWith(color: c.textPrimary)),
+          Text(widget.scan.confidence < 0.7
+              ? 'Some text was hard to read. Compare each row with the report and correct any errors.'
+              : 'Compare each row with the report. Keep any comparison signs, units, ranges, and flags as printed.'),
+          if (image != null)
+            ExpansionTile(
+              title: const Text('View report photo'),
+              children: [
+                SizedBox(
+                  height: 300,
+                  child: InteractiveViewer(
+                      maxScale: 5, child: Image.memory(image)),
                 ),
-                const SizedBox(height: NovaSpace.gap),
               ],
-              NovaCard(
-                padding: EdgeInsets.zero,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(NovaRadius.card),
-                  child: Column(
-                    children: [
-                      for (var i = 0; i < scan.results.length; i++) ...[
-                        if (i > 0) Divider(height: 0.5, thickness: 0.5, color: c.separator),
-                        _ResultRow(
-                          draft: scan.results[i],
-                          onChanged: (v) => setState(() => scan.results[i].include = v),
-                        ),
-                      ],
-                    ],
+            ),
+          ListTile(
+            title: const Text('Report date'),
+            subtitle: Text(date == null ? 'Unknown' : formatDate(date)),
+            onTap: _saving ? null : _pickDate,
+            trailing: date == null
+                ? const Icon(Icons.edit_outlined)
+                : IconButton(
+                    tooltip: 'Clear report date',
+                    onPressed: _saving
+                        ? null
+                        : () => setState(() {
+                              _reportDate = null;
+                              _reviewed = false;
+                            }),
+                    icon: const Icon(Icons.clear),
                   ),
-                ),
-              ),
-              const SizedBox(height: NovaSpace.gap),
-              Text(
-                flagged == 0
-                    ? 'Tags are worked out from the reference ranges printed on your report.'
-                    : '$flagged ${flagged == 1 ? 'result is' : 'results are'} outside the printed range. '
-                        'Only a doctor can tell what that means for you. Please share the report with them.',
-                style: NovaType.footnote.copyWith(color: c.textSecondary),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Nothing is saved until you confirm. Guidance, not medical advice.',
-                style: NovaType.footnote.copyWith(color: c.textSecondary),
-              ),
-            ],
           ),
-          Positioned(
-            top: pad.top + 4,
-            left: NovaSpace.margin,
-            child: GlassBackButton(label: 'Scan', onTap: _retake),
-          ),
-          Positioned(
-            left: NovaSpace.margin,
-            right: NovaSpace.margin,
-            bottom: (pad.bottom > 0 ? pad.bottom : 12) + 6,
-            child: Glass(
-              radius: NovaRadius.sheet,
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  NovaButton(
-                    label: _saving ? 'Saving…' : 'Save $_selected ${_selected == 1 ? 'result' : 'results'}',
-                    onPressed: _saving ? null : _confirm,
-                  ),
-                  const SizedBox(height: 4),
-                  NovaButton(label: 'Retake photo', kind: NovaButtonKind.plain, height: 44, onPressed: _retake),
-                ],
-              ),
+          NovaCard(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (var index = 0; index < _rows.length; index++)
+                  _resultRow(index),
+              ],
             ),
           ),
+          CheckboxListTile(
+            title:
+                const Text('I checked the selected results against my report.'),
+            value: _reviewed,
+            onChanged: _saving
+                ? null
+                : (value) => setState(() => _reviewed = value ?? false),
+            controlAffinity: ListTileControlAffinity.leading,
+            contentPadding: EdgeInsets.zero,
+          ),
+          const DisclaimerNote(),
         ],
       ),
-    );
-  }
-}
-
-class _ResultRow extends StatelessWidget {
-  const _ResultRow({required this.draft, required this.onChanged});
-
-  final LabResultDraft draft;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.nova;
-    final record = LabRecord(
-      id: '',
-      test: draft.test,
-      value: draft.value,
-      valueText: draft.valueText,
-      unit: draft.unit,
-      refLow: draft.refLow,
-      refHigh: draft.refHigh,
-      flag: draft.flag,
-    );
-    return Pressable(
-      onTap: () => onChanged(!draft.include),
-      semanticLabel: '${draft.test}, ${record.resultText}. ${draft.include ? 'Included' : 'Not included'}',
-      selected: draft.include,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.all(NovaSpace.margin),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              draft.include ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.circle,
-              color: draft.include ? c.primary : c.textSecondary,
-              size: 24,
+            NovaButton(
+              label: _saving
+                  ? 'Saving…'
+                  : 'Save $_selected ${_selected == 1 ? 'result' : 'results'}',
+              onPressed:
+                  _saving || !_reviewed || _selected == 0 ? null : _confirm,
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(draft.test, style: NovaType.headline.copyWith(color: c.textPrimary)),
-                  Text(
-                    record.rangeText.isEmpty ? record.resultText : '${record.resultText} · range ${record.rangeText}',
-                    style: NovaType.footnote.copyWith(color: c.textSecondary),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            LabFlagChip(flag: draft.flag),
+            NovaButton(
+                label: 'Retake photo',
+                kind: NovaButtonKind.plain,
+                onPressed: _saving ? null : _retake),
           ],
         ),
       ),
     );
   }
+
+  Widget _resultRow(int index) {
+    final row = _rows[index];
+    final detail = [
+      if (row.valueText == null)
+        'Result needs review'
+      else
+        [row.valueText, row.unit].nonNulls.join(' '),
+      if (row.referenceText case final range?) 'Reference $range',
+      if (row.reportedFlag case final flag?) 'Printed flag $flag',
+    ];
+    return ListTile(
+      leading: Checkbox(
+        semanticLabel: 'Include ${row.test}',
+        value: row.include,
+        onChanged: _saving
+            ? null
+            : (value) => setState(() {
+                  row.include = value ?? false;
+                  _reviewed = false;
+                }),
+      ),
+      title: Text(row.test),
+      subtitle: Text(detail.join(' · ')),
+      trailing: IconButton(
+        tooltip: 'Edit ${row.test}',
+        onPressed: _saving ? null : () => _edit(index),
+        icon: const Icon(Icons.edit_outlined),
+      ),
+    );
+  }
+}
+
+class _EditLabResult extends StatefulWidget {
+  const _EditLabResult({required this.row});
+
+  final LabResultDraft row;
+
+  @override
+  State<_EditLabResult> createState() => _EditLabResultState();
+}
+
+class _EditLabResultState extends State<_EditLabResult> {
+  final _form = GlobalKey<FormState>();
+  late String _test = widget.row.test;
+  late String? _result = widget.row.valueText;
+  late String? _unit = widget.row.unit;
+  late String? _reference = widget.row.referenceText;
+  late String? _flag = widget.row.reportedFlag;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Edit lab result'),
+        scrollable: true,
+        content: Form(
+          key: _form,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _field('Test name', _test, 80, (value) => _test = value!,
+                  isRequired: true),
+              _field('Printed result', _result, 160, (value) => _result = value,
+                  isRequired: true,
+                  validate: (value) => RegExp(r'^[<>=≤≥\s]+$').hasMatch(value)
+                      ? 'Enter the complete result.'
+                      : null),
+              _field('Unit', _unit, 40, (value) => _unit = value),
+              _field('Reference range', _reference, 240,
+                  (value) => _reference = value),
+              _field('Printed flag', _flag, 40, (value) => _flag = value),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () {
+              if (!_form.currentState!.validate()) return;
+              _form.currentState!.save();
+              Navigator.pop(
+                  context,
+                  LabResultDraft(
+                    test: _test,
+                    valueText: _result,
+                    extractedValueText: widget.row.extractedValueText,
+                    unit: _unit,
+                    referenceText: _reference,
+                    reportedFlag: _flag,
+                  )..include = widget.row.include);
+            },
+            child: const Text('Apply correction'),
+          ),
+        ],
+      );
+
+  Widget _field(
+    String label,
+    String? initial,
+    int limit,
+    ValueChanged<String?> save, {
+    bool isRequired = false,
+    String? Function(String)? validate,
+  }) =>
+      TextFormField(
+        decoration: InputDecoration(labelText: label, counterText: ''),
+        initialValue: initial,
+        maxLength: limit,
+        validator: (input) {
+          final value = input?.trim() ?? '';
+          if (isRequired && value.isEmpty) {
+            return 'Enter ${label.toLowerCase()}.';
+          }
+          return validate?.call(value);
+        },
+        onSaved: (input) {
+          final value = input?.trim() ?? '';
+          save(value.isEmpty ? null : value);
+        },
+      );
 }

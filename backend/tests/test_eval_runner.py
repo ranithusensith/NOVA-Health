@@ -5,7 +5,7 @@ import sys
 import httpx
 import pytest
 
-from eval import run_eval
+from eval import cases, run_eval
 
 
 def test_mock_evaluation_exercises_scans_and_agent_without_network(monkeypatch, tmp_path):
@@ -13,7 +13,11 @@ def test_mock_evaluation_exercises_scans_and_agent_without_network(monkeypatch, 
     monkeypatch.setenv("LLM_MODEL", "must-not-use-real-model")
     monkeypatch.setattr(sys, "argv", ["run_eval", "--mock", "--all", "--output-dir", str(tmp_path)])
     texts = {
-        image.read_bytes(): f"Patient: Synthetic Person\nSynthetic fixture {image.stem}"
+        image.read_bytes(): "\n".join([
+            "Patient: Synthetic Person", f"Synthetic fixture {image.stem}",
+            *(" ".join(part for part in (row["test"], row["value_text"], row["unit"], row["reference_text"]) if part)
+              for row in cases.REPORTS.get(image.name, [])),
+        ])
         for image in run_eval.SYNTHETIC_IMAGE_DIR.glob("*.jpg")
     }
 
@@ -30,6 +34,7 @@ def test_mock_evaluation_exercises_scans_and_agent_without_network(monkeypatch, 
     scans = report["scans"]["summary"]
     assert scans["prescription"]["items_found"] == "3/3"
     assert scans["report"]["items_found"] == "12/12"
+    assert scans["report"]["fields"] == {"value": "100%", "unit": "100%", "range": "100%", "flag": "100%"}
     assert scans["rejection"]["correct"] == "4/4"
     assert report["agent"]["summary"]["right_tool"] == "10/10"
     assert report["agent"]["summary"]["emergency_bypass"] == "5/5"
