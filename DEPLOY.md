@@ -5,6 +5,7 @@ The app uses Supabase for login. External AI is optional and disabled by default
 ## A. Before you start
 1. All code is on GitHub (the final upload). `backend/` must contain `Dockerfile` and `requirements.txt`.
 2. Have `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` ready. Review the [external AI privacy deployment requirements](docs/ai-privacy.md#storage-and-deployment) before adding an AI key or enabling Gemini.
+3. Set up the database using the [Supabase migration order](docs/database-setup.md).
 
 ## B. Render (free plan)
 1. Add the files from this pack: `backend/Dockerfile`, `backend/.dockerignore`, and `render.yaml` at the repo root.
