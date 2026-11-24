@@ -3,6 +3,7 @@ Read-only tools the assistant may call. Each returns small, summarised data
 (never raw rows, never the user's name or date of birth).
 """
 
+import math
 import os
 import re
 from collections import defaultdict
@@ -280,20 +281,51 @@ async def get_recent_logs(db, args: dict) -> dict:
     kind = args["kind"]
     days = args["days"]
     table, cols, ts = KINDS[kind]
+    latest = datetime.now(timezone.utc).isoformat()
     rows = await db.select(
-        table, cols, filters={ts: f"gte.{since_utc(days)}"}, order=f"{ts}.desc", limit=500,
+        table, cols, filters={ts: f"gte.{since_utc(days)}", "and": f"({ts}.lte.{latest})"},
+        order=f"{ts}.desc", limit=500,
     )
+    numeric_field = {"water": "amount_ml", "sleep": "hours", "meals": "calories"}.get(kind)
+    if numeric_field:
+        if len(rows) >= 500:
+            return {"kind": kind, "incomplete": True}
+        for row in rows:
+            value = row.get(numeric_field)
+            if (type(value) not in (int, float) or not math.isfinite(value)
+                    or (kind != "sleep" and type(value) is not int)
+                    or value < 0 or not row.get(ts) or (kind == "sleep" and value > 24)):
+                return {"kind": kind, "incomplete": True}
+    if kind == "sleep":
+        dates = [local_day(row[ts]) for row in rows]
+        # Without start/end times, multiple entries could overlap or be corrections.
+        if len(dates) != len(set(dates)):
+            return {"kind": kind, "conflicting": True}
     return summarize_logs(kind, rows, days)
 
 
 async def get_heart_rate(db, args: dict) -> dict:
     days = args["days"]
+    latest = datetime.now(timezone.utc).isoformat()
     rows = await db.select(
         "wearable_samples", "value,recorded_at,context",
-        filters={"metric": "eq.heart_rate", "recorded_at": f"gte.{since_utc(days)}"},
+        filters={"metric": "eq.heart_rate", "recorded_at": f"gte.{since_utc(days)}",
+                 "and": f"(recorded_at.lte.{latest})"},
         order="recorded_at.desc", limit=1000,
     )
-    return summarize_heart(rows)
+    by_instant = defaultdict(set)
+    for row in rows:
+        value = row.get("value")
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or not 20 <= value <= 250 or not row.get("recorded_at")):
+            return {"incomplete": True}
+        by_instant[parse_ts(row["recorded_at"])].add(value)
+    if any(len(values) > 1 for values in by_instant.values()):
+        return {"conflicting": True}
+    summary = summarize_heart(rows)
+    if by_instant:
+        summary["latest_saved_bpm"] = next(iter(by_instant[max(by_instant)]))
+    return summary
 
 
 async def get_cycle(db, args: dict) -> dict:

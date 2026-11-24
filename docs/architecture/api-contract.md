@@ -371,7 +371,7 @@ Request:
 
 ```json
 {
-  "message": "Why have I been tired this week?",
+  "message": "Summarize my sleep logs.",
   "reviewed": true,
   "health_data": ["logs"],
   "recent_questions": []
@@ -383,11 +383,17 @@ Response `200`:
 ```json
 {
   "data": {
-    "reply": "Your sleep averaged 5.5 hours and water intake was low on 4 days.",
-    "sources": ["sleep", "water"]
+    "reply": "Sleep logs (last 7 calendar days, including today), average per logged day: 5.5 hours.\n\nSaved records alone cannot establish a diagnosis or rule out a health problem. Ask a doctor or pharmacist about symptoms or treatment.\n\nGuidance, not medical advice.",
+    "sources": ["sleep"],
+    "warnings": [],
+    "emergency": false
   }
 }
 ```
+
+Gemini can select read-only tools allowed for the reviewed turn. NOVA builds the visible reply from returned records and fixed safety rules. Model-written claims and model-supplied source labels are ignored. The `sources` array identifies the record categories that supplied displayed facts. It is empty when no source supplied a fact.
+
+The assistant summarizes saved records with a bounded lookback. Averages are rounded and use logged days only. Missing or unreadable entries, multiple sleep entries on the same calendar day, conflicting heart-rate readings at the same instant, and differing lab entries for the same test and report date can prevent a numerical summary. Check Medical records for full lab values, units, ranges, flags, and rows omitted by the summary. Saved records may be incomplete, outdated, or entered incorrectly. The assistant does not diagnose, provide open-ended model advice, or verify the original clinical measurement. Clinical and live-provider validation of tool selection are still pending.
 
 ### 6.7 Error example
 

@@ -18,7 +18,8 @@ class _ChatApi implements ApiClient {
   @override
   final ValueNotifier<int> aiConsentRevocations = ValueNotifier<int>(0);
   final history = <List<String>>[];
-  Completer<String>? pending;
+  Completer<AssistantReply>? pending;
+  AssistantReply reply = const AssistantReply('Synthetic reply');
 
   @override
   Future<String?> checkAssistantEmergency(String message) async => null;
@@ -31,11 +32,11 @@ class _ChatApi implements ApiClient {
       );
 
   @override
-  Future<String> chat(String message,
+  Future<AssistantReply> chat(String message,
       {List<String> healthData = const [],
       List<String> recentQuestions = const []}) async {
     history.add(recentQuestions);
-    return pending == null ? 'Synthetic reply' : pending!.future;
+    return pending == null ? reply : pending!.future;
   }
 
   @override
@@ -82,7 +83,7 @@ void main() {
 
   testWidgets('new conversation drops a reply already in flight',
       (tester) async {
-    final api = _ChatApi()..pending = Completer<String>();
+    final api = _ChatApi()..pending = Completer<AssistantReply>();
     await tester
         .pumpWidget(NovaApp(home: Scaffold(body: AssistantScreen(api: api))));
     await _submit(tester, 'Synthetic pending question');
@@ -90,10 +91,29 @@ void main() {
 
     await tester.tap(find.bySemanticsLabel('New conversation'));
     await tester.pump();
-    api.pending!.complete('Synthetic late reply');
+    api.pending!.complete(
+      const AssistantReply('Synthetic late reply', sources: ['Sleep logs']),
+    );
     await tester.pumpAndSettle();
     expect(find.text('Synthetic late reply'), findsNothing);
     expect(find.text('Synthetic pending question'), findsNothing);
+    expect(find.text('Sources: Sleep logs'), findsNothing);
+  });
+
+  testWidgets('verified sources are shown with the assistant reply', (tester) async {
+    final api = _ChatApi()
+      ..reply = AssistantReply.fromJson({
+        'reply': 'Synthetic observation',
+        'sources': ['sleep', 'invalid source', 'sleep', 'water', 17],
+      });
+    await tester
+        .pumpWidget(NovaApp(home: Scaffold(body: AssistantScreen(api: api))));
+    await _submit(tester, 'Synthetic question');
+    expect(find.text('Synthetic observation'), findsOneWidget);
+    expect(find.text('Sources: Sleep logs, Water logs'), findsOneWidget);
+    await tester.tap(find.bySemanticsLabel('New conversation'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sources: Sleep logs, Water logs'), findsNothing);
   });
 
   testWidgets('confirmed consent revocation discards the active conversation',

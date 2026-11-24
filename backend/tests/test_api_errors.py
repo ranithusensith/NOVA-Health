@@ -167,8 +167,38 @@ def test_invalid_optional_telemetry_does_not_break_a_valid_answer(upstreams, mon
         ]}}],
     })
     response = client.post("/api/v1/assistant/chat", headers=AUTH, json=CHAT)
-    assert response.status_code == 200 and "Synthetic answer." in response.json()["data"]["reply"]
+    assert response.status_code == 200
+    assert "could not verify" in response.json()["data"]["reply"]
+    assert "Synthetic answer." not in response.text
     assert MARKER not in response.text and llm.USAGE == []
+
+
+def test_assistant_summary_reads_evidence_as_the_authenticated_account(upstreams, monkeypatch):
+    client, responses, requests = upstreams
+    responses["/rest/v1/water_logs"] = httpx.Response(200, json=[
+        {"amount_ml": 725, "logged_at": "2026-10-24T05:00:00Z"},
+    ])
+    actions = iter([
+        {"action": "tool", "tool": "get_recent_logs", "args": {"kind": "water", "days": 1}},
+        {"action": "final", "answer": "You drank 925 mL.", "used": ["profile"]},
+    ])
+    original_send = httpx.AsyncClient.send
+
+    async def send(client, request, **kwargs):
+        if request.url.host == "generativelanguage.googleapis.com":
+            responses["provider"] = provider_response(next(actions))
+        return await original_send(client, request, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    response = client.post(
+        "/api/v1/assistant/chat", headers=AUTH, json={**CHAT, "health_data": ["logs"]},
+    )
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    data = response.json()["data"]
+    assert "725 mL" in data["reply"] and "925 mL" not in data["reply"]
+    assert data["sources"] == ["water"]
+    assert requests.count("/rest/v1/water_logs") == 1
+    assert requests.count("/rest/v1/ai_processing_consents") == 3
 
 
 @pytest.mark.parametrize("model_output", [
@@ -231,7 +261,7 @@ def test_out_of_range_daily_report_date_is_client_error(upstreams, caplog, day):
 def test_unusable_assistant_step_is_bounded_then_returns_upstream_error(upstreams, caplog, monkeypatch):
     client, responses, requests = upstreams
     monkeypatch.setattr(main.agent, "MAX_STEPS", 1)
-    responses["provider"] = provider_response({"action": "final", "answer": [MARKER]})
+    responses["provider"] = provider_response({"action": [MARKER], "answer": [MARKER]})
     response = client.post("/api/v1/assistant/chat", headers=AUTH, json=CHAT)
     assert_error(response, 502, "AI_RESPONSE_INVALID", caplog)
     assert requests.count("provider") == 2
