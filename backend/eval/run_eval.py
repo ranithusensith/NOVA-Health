@@ -203,7 +203,8 @@ def eval_safety():
 
     rule_ok, rule_bad = 0, []
     for meds, allergies, conditions, expected in cases.RULE_CASES:
-        got = rules.check_all([{"name": m, "dosage": "500 mg", "times": ["08:00"]} for m in meds], allergies, conditions)
+        regimen = {"dosage": "500 mg per dose", "prescription_plan": {"kind": "daily", "frequency": "once daily"}}
+        got = rules.check_all([{"name": m, **regimen} for m in meds], allergies, conditions)
         sev = "high" if any(w.severity == "high" for w in got) else ("caution" if got else None)
         if sev == expected:
             rule_ok += 1

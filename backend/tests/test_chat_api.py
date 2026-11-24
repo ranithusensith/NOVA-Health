@@ -126,7 +126,7 @@ def test_daily_report_stays_local_when_external_ai_is_available(client, monkeypa
     assert data["ai"] is False and len(provider_replies) == 1
     assert "Provider-only tip." not in data["report"]
     assert "Water: 1.0 of 2.5 L (40%)" in data["report"]
-    assert "Drink a glass of water" in data["report"]
+    assert "usual hydration plan" in data["report"]
 
 
 def test_daily_report_ignores_an_unsafe_ai_summary(client, monkeypatch):
@@ -185,3 +185,20 @@ def test_scan_still_works_if_the_safety_lookup_fails(client, db, monkeypatch):
     assert res.json()["data"]["safety_check_status"] == "unavailable"
     assert res.json()["data"]["needs_user_confirmation"] is True
     assert db.inserted == []
+
+
+@pytest.mark.parametrize("message, urgent", [("හුස්ම ගන්න බැහැ", True), ("How did I sleep?", False)])
+def test_nova_only_preflight_never_calls_ai_or_checks_consent(client, db, monkeypatch, message, urgent):
+    script_llm(monkeypatch, [])
+    db.tables["ai_processing_consents"] = []
+    monkeypatch.setattr(main, "CHAT_DAILY_LIMIT", 0)
+    result = client.post("/api/v1/assistant/chat", json={
+        "message": message, "emergency_only": True, "reviewed": True,
+    })
+    assert result.status_code == 200 and not db.selects
+    reply = result.json()["data"]
+    assert reply["emergency"] is urgent
+    if urgent:
+        assert "දැන්ම 1990" in reply["reply"]
+    else:
+        assert reply["reply"] == ""

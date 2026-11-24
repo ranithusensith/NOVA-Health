@@ -237,7 +237,7 @@ def test_interval_anchor_requires_an_offset_and_matching_start_date(client, db, 
 def test_exact_interval_preserves_c1_check_and_review_is_bound_to_the_interval(client, db, draft):
     plan = {"kind": "interval", "interval_minutes": 420, "first_dose_at": "2026-11-23T22:00:00+05:30"}
     draft["medications"][0].update(
-        name="Paracetamol", dosage="1800 mg", times=[], prescription_plan=plan, reminders_enabled=False,
+        name="Paracetamol", dosage="1800 mg per dose", times=[], prescription_plan=plan, reminders_enabled=False,
     )
     first = client.post("/api/v1/scan/prescription/confirm", json=draft).json()["data"]
     assert first["activated"] is False

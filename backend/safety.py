@@ -3,14 +3,14 @@ Safety layer around the AI. Fixed rules, never decided by the model.
 
 1. redact()            removes emails, phone numbers and ID numbers before text reaches the AI
 2. detect_emergency()  recognises red-flag messages BEFORE any AI call
-3. guard_output()      blocks diagnosis-style wording in AI answers
+3. guard_output()      blocks common unsafe treatment and diagnosis wording
 4. finalize()          adds rule-engine safety notes and the disclaimer
 
-Emergency numbers (Sri Lanka): 1990 free ambulance (Suwa Seriya), 119 police,
-1926 National Mental Health Helpline (24/7, free). English keywords only for now.
+Emergency detection uses a limited English and Sinhala vocabulary.
 """
 
 import re
+import unicodedata
 
 DISCLAIMER = "Guidance, not medical advice."
 MAX_REPLY_CHARS = 1200
@@ -95,69 +95,139 @@ def clinical_text(text: str, known_identifiers: tuple[str, ...] = ()) -> str:
 
 
 # ---------------------------------------------------------------- emergencies
-_SELF_HARM = [
-    "kill myself", "end my life", "want to die", "wanna die", "suicid", "hurt myself",
-    "self harm", "self-harm", "don't want to live", "dont want to live", "better off dead",
-    "ending my life", "end my own life", "take my own life", "taking my own life", "end it all",
-    "ending it all", "no reason to live", "not worth living", "wish i was dead", "wish i were dead",
-]
-_MEDICAL = [
-    "chest pain", "pain in my chest", "can't breathe", "cant breathe", "cannot breathe",
-    "can not breathe", "trouble breathing", "difficulty breathing", "hard to breathe",
-    "not breathing", "heart attack", "stroke", "face drooping", "slurred speech",
-    "unconscious", "passed out", "fainted", "seizure", "convulsion", "severe bleeding",
-    "bleeding heavily", "bleeding a lot", "coughing blood", "coughing up blood", "vomiting blood",
-    "overdose", "took too many", "swallowed poison", "poisoned", "anaphyla", "throat is closing",
-    "throat closing", "tongue is swelling", "swelling of my throat", "severe allergic reaction",
-]
-
-
-# "What is stroke?" or "Explain what a heart attack is" are questions about a word, not an emergency.
-# They only count as general questions when nobody (I, my, he, she, my mother...) is mentioned.
-_GENERAL_QUESTION = re.compile(r"^(what is|what's|what are|explain|define|describe|tell me about|meaning of)\b")
+_SELF_HARM = re.compile(
+    r"\b(?:kill (?:myself|himself|herself|themselves)|end (?:my|his|her|their) (?:own )?life|"
+    r"(?:want to|wanna) die|suicid(?:e|al)|hurt myself|self[ -]harm|don'?t want to live|"
+    r"better off dead|ending my life|tak(?:e|ing) my own life|end(?:ing)? it all|"
+    r"no reason to live|not worth living|wish i (?:was|were) dead)\b"
+)
+_MEDICAL = re.compile(
+    r"\b(?:chest (?:pain|pressure|tightness|heaviness)|"
+    r"(?:pain|pressure|tightness) in (?:my|the|his|her) chest|"
+    r"(?:can'?t|cannot|can not) (?:breathe|catch (?:my|his|her) breath)|not breathing|gasping|"
+    r"(?:trouble|difficulty) breathing|hard to breathe|struggling to breathe|"
+    r"heart attack|stroke|fac(?:e|ial) (?:is )?droop(?:s|ing)?|slurred speech|"
+    r"one[ -]sided weakness|(?:can'?t|cannot) (?:move (?:one|my|his|her) arm|speak)|"
+    r"unconscious|unresponsive|passed out|fainted|won'?t wake up|seizures?|convulsions?|"
+    r"(?:severe|heavy) bleeding|bleeding (?:heavily|a lot|won'?t stop)|"
+    r"(?:coughing(?: up)?|vomiting|throwing up) blood|choking|"
+    r"overdos(?:e|ed)|(?:took|taken|swallowed) too (?:many|much)|swallowed poison|"
+    r"poisoned|anaphylaxis|throat (?:is )?closing|tongue (?:is )?swelling|"
+    r"swelling of my throat|severe allergic reaction)\b"
+)
+_SINHALA_SELF_HARM = (
+    "මට මැරෙන්න ඕන", "ජීවිතේ නැති කරගන්න", "ජීවිතය නැති කරගන්න", "සියදිවි නසාගන්න", "සියදිවි නසා ගැනීමට",
+)
+_SINHALA_MEDICAL = (
+    "පපුව රිදෙනවා", "පපුවේ වේදනාව", "පපුවේ කැක්කුම", "පපුව තද වෙනවා",
+    "හුස්ම ගන්න බෑ", "හුස්ම ගන්න බැහැ", "හුස්ම ගන්න බැරි", "හුස්ම ගන්න අමාරු",
+    "හුස්ම ගන්නේ නෑ", "හුස්ම ගන්නෙ නෑ", "හුස්ම ගන්නේ නැහැ", "හුස්ම හිර",
+    "සිහිය නැහැ", "සිහිය නෑ", "සිහිය නැති", "ලේ ගොඩක් යනවා", "ලේ නවතින්නේ නැහැ",
+    "ලේ වමනය", "විෂ බීලා", "බෙහෙත් වැඩිපුර ගත්තා", "බෙහෙත් ගොඩක් බිව්වා",
+    "මූණ පැත්තකට වැටිලා", "වලිප්පුව හැදිලා",
+)
+_SINHALA = re.compile(r"[\u0d80-\u0dff]")
 _PERSON = re.compile(
     r"\b(i|i'm|im|i've|ive|my|me|we|he|she|they|him|her|someone|somebody|mom|mum|mother|father|dad|"
     r"baby|child|son|daughter|friend|husband|wife|brother|sister)\b"
 )
+_GENERAL_QUESTION = re.compile(
+    r"^(?:what (?:is|are|does)|what's|explain|define|describe|tell me about|meaning of)\b"
+)
+_CURRENT = re.compile(r"\b(?:now|currently|today|happening|just started)\b")
+_CLAUSE = re.compile(r"[.!?;,\n]+|\b(?:but|however|and now)\b")
+# Exempt a directly negated English symptom only, never a later clause.
+_NEGATED = re.compile(
+    r"\b(?:no|without|denies|denied|(?:do not|don't|does not|doesn't) have)\s+(?:any\s+)?$"
+)
+
+
+def _normalize(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Cf")
+    return re.sub(r"[^\S\n]+", " ", normalized.replace("’", "'").replace("‘", "'")).strip()
 
 
 def detect_emergency(text: str) -> str | None:
-    """Returns 'self_harm', 'medical' or None."""
-    t = re.sub(r"\s+", " ", text.lower()).strip()
-    if any(k in t for k in _SELF_HARM):
-        return "self_harm"
-    if any(k in t for k in _MEDICAL):
-        if _GENERAL_QUESTION.match(t) and not _PERSON.search(t):
-            return None
-        return "medical"
-    return None
+    """Recognize red-flag wording without sending the text away."""
+    medical = False
+    for clause in _CLAUSE.split(_normalize(text)):
+        clause = clause.strip()
+        if (_GENERAL_QUESTION.match(clause) and not _PERSON.search(clause)
+                and not _CURRENT.search(clause) and not _SINHALA.search(clause)):
+            continue
+        if any(_normalize(phrase) in clause for phrase in _SINHALA_SELF_HARM) or _SELF_HARM.search(clause):
+            return "self_harm"
+        if any(_normalize(phrase) in clause for phrase in _SINHALA_MEDICAL) or any(
+            not _NEGATED.search(clause[:match.start()]) for match in _MEDICAL.finditer(clause)
+        ):
+            medical = True
+    return "medical" if medical else None
 
 
-def emergency_reply(kind: str) -> str:
+def logged_emergency(rows: list[dict]) -> tuple[str, str] | None:
+    """Prioritize a self-harm alert when multiple current symptom logs match."""
+    medical = None
+    for row in rows:
+        text = row.get("name")
+        if row.get("status") != "active" or not isinstance(text, str):
+            continue
+        kind = detect_emergency(text)
+        if kind == "self_harm":
+            return kind, text
+        if kind == "medical" and medical is None:
+            medical = kind, text
+    return medical
+
+
+def emergency_reply(kind: str, *, text: str = "") -> str:
+    if _SINHALA.search(text):
+        if kind == "self_harm":
+            return (
+                "ඔබට දැන්ම ඔබටම හානි කරගන්න ඉඩක් තිබේ නම් හෝ දැනටමත් හානියක් සිදුවී ඇත්නම්, 1990 අමතන්න. "
+                "විශ්වාස කරන කෙනෙකුට දැන්ම කියන්න. ඔබ ළඟ රැඳී සිටින්න කියා ඔවුන්ගෙන් ඉල්ලන්න. "
+                "මානසික සෞඛ්‍ය සහාය සඳහා 1926 අමතන්න."
+            )
+        return (
+            "මෙය හදිසි තත්ත්වයක් විය හැකියි. දැන්ම 1990 සුව සැරිය ගිලන් රථ සේවාව අමතන්න. "
+            "ඇමතුමට පිළිතුරු දෙන නිලධාරියාගේ උපදෙස් අනුගමනය කරන්න."
+        )
     if kind == "self_harm":
         return (
-            "I'm really sorry you are feeling this way, and I'm glad you said it. You do not have to "
-            "face this alone.\n\n"
-            "- Call 1926 (National Mental Health Helpline, free, 24 hours) or send them a text.\n"
-            "- If you might act on these thoughts right now, call 1990 for an ambulance or go to the "
-            "nearest hospital, and ask someone you trust to stay with you.\n\n"
-            "Please reach out to one of these now. I'm here, but they can help you in ways I can't."
+            "You do not have to face this alone.\n\n"
+            "- If there is immediate danger or someone may already have taken something or hurt themselves, "
+            "call 1990 for an ambulance now. Ask someone you trust to stay nearby.\n"
+            "- For mental health support, call or text 1926 (National Mental Health Helpline)."
         )
     return (
         "This could be an emergency. Please do not wait for the app.\n\n"
-        "- Call 1990 (free ambulance, Suwa Seriya) now, or go to the nearest hospital.\n"
-        "- If someone is unconscious or not breathing, call 1990 first and follow the operator's instructions.\n"
-        "- Stay with the person and keep them as calm and still as you can.\n\n"
+        "- Call 1990 (free ambulance, Suwa Seriya) now and follow the operator's instructions.\n\n"
         "You can also open the SOS screen in NOVA Health to alert your emergency contacts."
     )
 
 
 # ---------------------------------------------------------------- output guard
-_BLOCKED = [
-    "you have been diagnosed", "you are diagnosed", "you definitely have", "you certainly have",
-    "you are suffering from", "i diagnose", "this is definitely", "stop taking your medication",
-    "stop taking your medicine", "increase your dose", "double your dose", "take more of",
-]
+_BLOCKED = re.compile(
+    r"\b(?:you (?:definitely |certainly )?have been diagnosed|you are diagnosed|"
+    r"you (?:definitely|certainly) have|you are suffering from|i diagnose|this is definitely|"
+    r"you have (?:diabetes|asthma|cancer|pneumonia|hypertension|an infection)|"
+    r"(?:stop|skip|restart|start|increase|reduce|decrease|double|halve|change|adjust) "
+    r"(?:(?:taking|using) )?(?:(?:your|the|this|that|a|an) )?"
+    r"(?:next |usual |daily )?(?:dose|medicine|medication|tablets?|pills?|insulin|antibiotics?)|"
+    r"take (?:more of|another|an extra|it (?:after|before|with|without) (?:food|water))|"
+    r"(?:take|give|use|try|start|swallow|inject)\s+(?:\w+\s+){0,4}"
+    r"\d+(?:[.,]\d+)?\s*(?:mg|mcg|g|ml|tablets?|capsules?|pills?|units?)|"
+    r"(?:take|give|use|try|start)\s+(?:(?:one|two|three|four|half)\s+(?:tablets?|capsules?|pills?)|"
+    r"(?:paracetamol|acetaminophen|panadol|ibuprofen|aspirin|insulin|antibiotics?))|"
+    r"(?:safe (?:for you|to (?:take|combine|mix))|no (?:known )?(?:drug )?interactions|"
+    r"your (?:medicine|medication)s? (?:is|are) (?:completely )?(?:safe|fine))|"
+    r"(?:no need to|do not|don't(?: need to)?) (?:call (?:an ambulance|emergency services|1990)|seek (?:urgent|emergency) help))\b"
+)
+_BLOCKED_SINHALA = ("මාත්‍රාව දෙගුණ", "මාත්‍රාව වැඩි කරන්න", "බෙහෙත් නවත්වන්න", "ඔබට අනිවාර්යයෙන්ම")
+SAFETY_UNAVAILABLE = {
+    "severity": "caution",
+    "message": "Medication safety details could not be checked. Ask a pharmacist or doctor to review them.",
+}
 _SAFE_FALLBACK = (
     "I can't tell you what condition this is or change your treatment. Please talk to a doctor or "
     "pharmacist about it, and get medical help quickly if you feel very unwell."
@@ -170,27 +240,38 @@ _MED_WORDS = re.compile(
 )
 
 
-def guard_output(text: str) -> str:
+_PERSONAL_TREATMENT = re.compile(
+    r"\b(?:(?:can|should|may|could) (?:i|we|my \w+) "
+    r"(?:take|stop|start|skip|increase|decrease|combine|mix)\s+(?!a (?:nap|walk|break)\b)|"
+    r"how (?:much|many|often) (?:\w+ ){0,4}(?:should|can) i (?:take|give)\b)"
+)
+
+
+def guard_output(text: str, *, question: str = "", limit: int | None = MAX_REPLY_CHARS) -> str:
     t = text.strip()
-    low = t.lower()
-    if any(b in low for b in _BLOCKED):
+    normalized = re.sub(r"\s+", " ", _normalize(t))
+    normalized = re.sub(r"[*_#`]", "", normalized)
+    personal_medication = _MED_WORDS.search(question + " " + text) and _PERSONAL_TREATMENT.search(_normalize(question))
+    if (not t or personal_medication or _BLOCKED.search(normalized)
+            or any(_normalize(phrase) in normalized for phrase in _BLOCKED_SINHALA)):
         return _SAFE_FALLBACK
-    if len(t) > MAX_REPLY_CHARS:
-        t = t[:MAX_REPLY_CHARS].rsplit(" ", 1)[0] + "…"
+    if limit is not None and len(t) > limit:
+        t = t[:limit].rsplit(" ", 1)[0] + "…"
     return t
 
 
-def finalize(answer: str, notes: list[dict], question: str) -> str:
-    """Guard the answer, add rule-engine notes when relevant, add the disclaimer."""
-    text = guard_output(answer)
-    show_notes = False
+def finalize(text: str, notes: list[dict]) -> str:
+    """Attach the same fixed warnings and disclaimer to patient-facing text."""
     if notes:
-        if _MED_WORDS.search(question):
-            show_notes = True
-        else:
-            low = text.lower()
-            show_notes = any(n.get("subject", "").lower() in low for n in notes if n.get("subject"))
-    if show_notes:
-        lines = [f"- {n['message']}" for n in notes[:3]]
+        lines = [f"- {guard_output(note['message'], limit=None)}" for note in notes[:3]]
         text += "\n\nSafety notes:\n" + "\n".join(lines)
     return f"{text}\n\n{DISCLAIMER}"
+
+
+def relevant_notes(notes: list[dict], question: str, answer: str) -> list[dict]:
+    content = _normalize(question + " " + answer)
+    if _MED_WORDS.search(content) or any(
+        _normalize(word) in content for word in ("බෙහෙත්", "ඖෂධ", "මාත්‍රා")
+    ):
+        return notes
+    return [note for note in notes if note.get("subject") and _normalize(note["subject"]) in content]

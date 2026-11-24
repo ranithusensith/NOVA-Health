@@ -223,6 +223,7 @@ async def prescription_safety(db: UserDB, proposed: list[dict]) -> dict:
 class ChatRequest(BaseModel):
     message: str
     reviewed: StrictBool = False
+    emergency_only: StrictBool = False
     health_data: list[Literal["profile", "medications", "logs", "heart_rate", "cycle", "lab_results"]] = Field(
         default_factory=list, max_length=6,
     )
@@ -363,7 +364,9 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
     emergency = safety.detect_emergency(message)
     if emergency:
         # Local emergency advice must work without the external provider or consent.
-        result = agent.AgentResult(reply=safety.emergency_reply(emergency), emergency=True)
+        result = agent.AgentResult(reply=safety.emergency_reply(emergency, text=message), emergency=True)
+    elif body.emergency_only:
+        result = agent.AgentResult(reply="")
     else:
         await ai_privacy.require_consent(db)
         if not body.reviewed:

@@ -84,8 +84,8 @@ def build_prompt(question: str, history: list[dict], notes: list[dict], observat
 async def _safety_notes(db) -> list[dict]:
     try:
         return await tools.get_safety_warnings(db)
-    except Exception:  # noqa: BLE001  (the rules are an extra; never block the chat)
-        return []
+    except Exception:  # noqa: BLE001  (keep chat available and explain the lookup failure)
+        return [safety.SAFETY_UNAVAILABLE]
 
 
 def _minimize_result(name: str, result: dict, identifiers: tuple[str, ...]) -> dict:
@@ -151,7 +151,7 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
     # 1) Fixed emergency rules run BEFORE any AI call.
     kind = safety.detect_emergency(question)
     if kind:
-        return AgentResult(reply=safety.emergency_reply(kind), emergency=True)
+        return AgentResult(reply=safety.emergency_reply(kind, text=question), emergency=True)
 
     question = safety.redact_chat(question, identifiers).strip()[:MAX_QUESTION_CHARS]
     history = [
@@ -194,6 +194,12 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
                     continue
                 seen.add(key)
                 result = await tools.run_tool(name, raw_args, db)
+                if name == "get_recent_logs" and args.get("kind") == "symptoms":
+                    today = tools.local_today().isoformat()
+                    active_today = [row for row in result["symptoms"] if row.get("since") == today]
+                    if urgent := safety.logged_emergency(active_today):
+                        kind, text = urgent
+                        return AgentResult(reply=safety.emergency_reply(kind, text=text), emergency=True)
                 observations.append({"tool": name, "args": args, "result": _minimize_result(name, result, identifiers)})
                 steps.append({"tool": name, "args": args, "ok": True})
                 label = tools.source_label(name, args)
@@ -217,5 +223,8 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
             answer = ("I could not finish that. Please ask again in a simpler way, "
                       "or check your logs in the app.")
 
-    reply = safety.finalize(safety.redact_chat(answer, identifiers), notes, question)
-    return AgentResult(reply=reply, sources=sources, steps=steps, warnings=notes)
+    answer = safety.redact_chat(answer, identifiers)
+    notes = safety.relevant_notes(notes, question, answer)
+    reply = safety.finalize(safety.guard_output(answer, question=question), notes)
+    warnings = [{**note, "message": safety.guard_output(note["message"], limit=None)} for note in notes]
+    return AgentResult(reply=reply, sources=sources, steps=steps, warnings=warnings)

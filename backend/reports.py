@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 import safety
 import tools
+from db import DBError
 
 WATER_GOAL_ML = 2500
 SLEEP_GOAL_H = 7.0
@@ -47,6 +48,10 @@ async def _day_doses(db, day: date) -> tuple[int, int]:
 
 
 async def build_daily_data(db, day: date) -> dict:
+    symptoms = []
+    if day == tools.local_today():
+        symptoms = await _day_rows(db, "symptom_logs", "name,status,started_at", "started_at", day,
+                                   {"status": "eq.active"})
     water = await _day_rows(db, "water_logs", "amount_ml,logged_at", "logged_at", day)
     sleep = await _day_rows(db, "sleep_logs", "hours,logged_at", "logged_at", day)
     mood = await _day_rows(db, "mood_logs", "mood,logged_at", "logged_at", day)
@@ -56,6 +61,11 @@ async def build_daily_data(db, day: date) -> dict:
     taken, unassigned = await _day_doses(db, day)
     meds = (await tools.get_medications(db, {}, day=day))["medications"]
     labs = await tools.get_lab_results(db, {}, day=day)
+
+    try:
+        warnings = await tools.get_safety_warnings(db, meds=meds)
+    except DBError:
+        warnings = [safety.SAFETY_UNAVAILABLE]
 
     scheduled = sum(tools.scheduled_doses_on(m, day) for m in meds)
     return {
@@ -72,6 +82,8 @@ async def build_daily_data(db, day: date) -> dict:
         "doses_taken": taken,
         "unassigned_dose_logs": unassigned,
         "lab_results": labs.get("results", []),
+        "warnings": warnings,
+        "emergency": safety.logged_emergency(symptoms),
     }
 
 
@@ -102,13 +114,13 @@ def highlights(d: dict) -> list[str]:
         if lab["flag"] not in (None, "unknown"):
             observation += f" · recorded flag {lab['flag']}"
         out.append(f"Lab result: {lab['test']} {observation}")
-    return out
+    return [safety.guard_output(item, limit=None) for item in out]
 
 
 def tips(d: dict) -> list[str]:
     out: list[str] = []
     if d["water_ml"] < d["water_goal_ml"] * 0.6:
-        out.append("Drink a glass of water now and keep a bottle nearby.")
+        out.append("Review your recorded water intake against your usual hydration plan.")
     if d["sleep_hours"] is not None and d["sleep_hours"] < 6:
         out.append("Try to go to bed a little earlier tonight.")
     if d["sleep_hours"] is None:
@@ -117,12 +129,12 @@ def tips(d: dict) -> list[str]:
         out.append("Check your medicines in the app and mark the ones you took.")
     if any(m in ("low", "bad") for m in d["moods"]):
         out.append("If you feel low for several days, talk to someone you trust or a doctor.")
-    return out[:3]
+    return [safety.guard_output(item, limit=None) for item in out[:3]]
 
 
-def fallback_text(d: dict) -> str:
+def fallback_text(d: dict, items: list[str]) -> str:
     t = tips(d)
-    text = "Here is your day at a glance:\n" + "\n".join(f"- {h}" for h in highlights(d))
+    text = "Here is your day at a glance:\n" + "\n".join(f"- {h}" for h in items)
     if t:
         text += "\n\nSuggestions:\n" + "\n".join(f"- {x}" for x in t)
     return text
@@ -130,9 +142,14 @@ def fallback_text(d: dict) -> str:
 
 async def daily_report(db, day: date) -> dict:
     data = await build_daily_data(db, day)
+    items = highlights(data)
+    text = fallback_text(data, items)
+    if data["emergency"]:
+        kind, symptom = data["emergency"]
+        text = safety.emergency_reply(kind, text=symptom) + "\n\n" + text
     return {
         "date": day.isoformat(),
-        "report": f"{fallback_text(data)}\n\n{safety.DISCLAIMER}",
-        "highlights": highlights(data),
+        "report": safety.finalize(text, data["warnings"]),
+        "highlights": items,
         "ai": False,
     }

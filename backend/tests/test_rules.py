@@ -54,10 +54,10 @@ def test_two_paracetamol_products_are_flagged():
 
 
 def test_daily_paracetamol_limit():
-    meds = [{"name": "Paracetamol", "dosage": "1 g", "times": ["06:00", "10:00", "14:00", "18:00", "22:00"]}]
+    meds = [{"name": "Paracetamol", "dosage": "1 g per dose", "prescription_plan": {"kind": "daily", "frequency": "5 times daily"}}]
     ws = rules.check_paracetamol_limit(meds)
     assert len(ws) == 1 and ws[0].severity == "high"
-    ok = [{"name": "Paracetamol", "dosage": "500 mg", "times": ["08:00", "14:00", "20:00"]}]
+    ok = [{"name": "Paracetamol", "dosage": "500 mg per dose", "prescription_plan": {"kind": "daily", "frequency": "3 times daily"}}]
     assert rules.check_paracetamol_limit(ok) == []
 
 

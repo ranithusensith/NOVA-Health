@@ -47,8 +47,9 @@ class EmergencyContactCache {
     final value = await _storage.read(key: _key);
     if (value == null) return null;
     final data = jsonDecode(value);
-    if (data is! Map || data['owner'] != owner || data['contacts'] is! List)
+    if (data is! Map || data['owner'] != owner || data['contacts'] is! List) {
       return null;
+    }
     return [
       for (final row in data['contacts'] as List)
         EmergencyContact.fromJson((row as Map).cast<String, dynamic>()),
@@ -58,8 +59,9 @@ class EmergencyContactCache {
   Future<List<EmergencyContact>?> read(String? owner) async {
     final generation = _generation;
     await _pending;
-    if (owner == null || owner != _owner || generation != _generation)
+    if (owner == null || owner != _owner || generation != _generation) {
       return null;
+    }
     try {
       final contacts = await _read(owner);
       return generation == _generation ? contacts : null;
@@ -84,8 +86,9 @@ class EmergencyContactCache {
   Future<void> replace(String owner, List<EmergencyContact> contacts) {
     final generation = _generation;
     return _schedule(() async {
-      if (owner == _owner && generation == _generation)
+      if (owner == _owner && generation == _generation) {
         await _write(owner, contacts);
+      }
     });
   }
 

@@ -54,14 +54,17 @@ def test_guard_shortens_very_long_text():
 
 def test_finalize_adds_disclaimer_and_notes_for_medicine_questions():
     notes = [{"severity": "high", "message": "Amoxicillin: do not take it.", "subject": "Amoxicillin"}]
-    out = safety.finalize("Take it after food.", notes, "Can I take my medicine with food?")
+    question = "Can I take my medicine with food?"
+    answer = "Take it after food."
+    out = safety.finalize(safety.guard_output(answer, question=question), safety.relevant_notes(notes, question, answer))
     assert "Safety notes" in out and "Amoxicillin" in out
     assert out.rstrip().endswith(safety.DISCLAIMER)
 
 
 def test_finalize_skips_notes_for_unrelated_questions():
     notes = [{"severity": "high", "message": "Amoxicillin: do not take it.", "subject": "Amoxicillin"}]
-    out = safety.finalize("You slept 5 hours.", notes, "How did I sleep?")
+    answer = "You slept 5 hours."
+    out = safety.finalize(answer, safety.relevant_notes(notes, "How did I sleep?", answer))
     assert "Safety notes" not in out
     assert out.rstrip().endswith(safety.DISCLAIMER)
 
