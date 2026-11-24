@@ -10,7 +10,7 @@ Principle: **code decides what is safe; the AI only explains.**
 | Invented numbers | Daily report numbers come from code; the AI writes only the summary | `reports.py` |
 | Wrong lab flags | Low / normal / high computed from the reported range in code | `scan.py` |
 | Scan saved without review | Nothing is saved until the user confirms | app scan screens |
-| Privacy | AI gets redacted text and a compact context; the backend uses the user's own token so row-level security applies; no secret key on the server | `db.py`, `schema.sql` |
+| Privacy | AI gets redacted text and a compact context; the backend uses the user's own token so row-level security applies; no secret key on the server | `db.py`, [database setup](database-setup.md) |
 | Diagnosis wording | Output guard blocks diagnosis and dose-change wording; every AI reply ends with "Guidance, not medical advice." | `safety.py` |
 | Abuse and cost | Daily quotas per user; image size and type checks | `main.py`, `scan.py` |
 | SOS spam | 30-second cooldown; SOS is logged | `main.py` |
