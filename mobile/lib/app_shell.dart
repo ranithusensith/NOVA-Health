@@ -8,12 +8,14 @@ import 'data/care_models.dart';
 import 'data/care_repository.dart';
 import 'data/health_repository.dart';
 import 'data/sample_data.dart';
+import 'data/weather.dart';
 import 'screens/assistant_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/scan_camera_screen.dart';
 import 'screens/track_screen.dart';
 import 'services/privacy_diagnostics.dart';
+import 'services/api_client.dart';
 import 'theme/nova_theme.dart';
 import 'widgets/floating_tab_bar.dart';
 import 'widgets/states.dart';
@@ -44,6 +46,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   bool _loading = true;
   String? _error;
   int _loadVersion = 0;
+  late final _weather = WeatherSession(ApiClient.instance.loadWeather);
   late final Timer _doseCalendarTimer;
   late ({String day, Duration offset}) _doseDay;
 
@@ -71,6 +74,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _doseCalendarTimer.cancel();
+    _weather.dispose();
     HealthRepository.changes.removeListener(_load);
     super.dispose();
   }
@@ -168,6 +172,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
               children: [
                 HomeScreen(
                   data: _snapshot,
+                  weather: _weather,
                   loading: _loading,
                   error: _error,
                   onRetry: () {
@@ -177,7 +182,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   onOpenTrack: () => _select(1),
                 ),
                 TrackScreen(onLogged: _load),
-                const AssistantScreen(),
+                AssistantScreen(weather: _weather),
                 const ProfileScreen(),
               ],
             ),

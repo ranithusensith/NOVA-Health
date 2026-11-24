@@ -1,6 +1,8 @@
 import 'package:flutter/widgets.dart';
 
 import '../theme/nova_theme.dart';
+import '../data/weather.dart';
+import 'weather_card.dart';
 import '../widgets/content.dart';
 import '../widgets/states.dart';
 
@@ -96,6 +98,18 @@ class _DemoHomeState extends State<DemoHome> {
                     style: NovaType.body.copyWith(color: colors.textPrimary),
                   ),
                 ),
+                const SizedBox(height: 24),
+                const NovaCard(
+                  child: WeatherDetails(
+                    status: WeatherStatus.demo,
+                    snapshot: WeatherSnapshot(
+                      status: WeatherStatus.demo,
+                      current: WeatherConditions(temperature: 27, feelsLike: 29, humidity: 61, condition: 'Partly cloudy'),
+                      forecast: [WeatherDay('Sample day', low: 21, high: 28, precipitation: 20, condition: 'Partly cloudy')],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
               ],
             ),
           ),

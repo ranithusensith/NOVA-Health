@@ -34,6 +34,7 @@ load_dotenv()
 
 import daily_metrics  # noqa: E402
 import ai_privacy  # noqa: E402
+import assistant_evidence  # noqa: E402
 import agent  # noqa: E402  (after load_dotenv so env vars are set)
 import lab_results  # noqa: E402
 import llm  # noqa: E402
@@ -44,6 +45,7 @@ import safety  # noqa: E402
 import scan  # noqa: E402
 import symptoms  # noqa: E402
 import tools  # noqa: E402
+import weather  # noqa: E402
 from db import DBError, InvalidDBResponse, UserDB  # noqa: E402
 from upstream import decode_json  # noqa: E402
 
@@ -103,7 +105,7 @@ async def safe_api_responses(request: Request, call_next):
         # Exception messages, tracebacks, request URLs and bodies may include patient data.
         error_log.error("API request failed unexpectedly")
         return _error_response(500, "SERVER_ERROR", "Could not process this request.")
-    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/", "/api/v1/medications/", "/api/v1/symptoms/")):
+    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/", "/api/v1/medications/", "/api/v1/symptoms/", "/api/v1/weather/")):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -213,6 +215,7 @@ async def get_db(
 # ---------------------------------------------------------------
 _scan_counts: dict[tuple[str, str], int] = {}
 _chat_counts: dict[tuple[str, str], int] = {}
+_weather_counts: dict[tuple[str, str], int] = {}
 
 
 def _check_quota(bucket: dict, user_id: str, limit: int, what: str) -> None:
@@ -288,8 +291,19 @@ class DeviceCalendar(BaseModel):
         raise ApiError(400, "INVALID_INPUT", "Check your device date and time zone.")
 
 
+WeatherCityID = Annotated[int, Field(strict=True, ge=1, le=weather.MAX_CITY_ID)]
+
+
+class WeatherContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    city_id: WeatherCityID
+    consent: StrictBool
+
+
 class ChatRequest(BaseModel):
     local_calendar: DeviceCalendar | None = None
+    weather: WeatherContext | None = None
     message: str
     reviewed: StrictBool = False
     emergency_only: StrictBool = False
@@ -554,12 +568,58 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
             calendar=body.local_calendar.resolve() if body.local_calendar else None,
         )
 
+        if body.weather is not None and body.weather.consent and not result.emergency:
+            await ai_privacy.require_consent(db)
+            settings = body.weather
+            try:
+                _check_quota(_weather_counts, db.user_id, 60, "weather lookup")
+                snapshot = await weather.service.forecast(settings.city_id)
+                evidence = weather.assistant_evidence(snapshot)
+            except (weather.CityNotFound, ApiError):
+                evidence = None
+            body_text = result.reply.removesuffix(f"\n\n{safety.DISCLAIMER}")
+            if evidence:
+                result.sources.append("weather")
+                body_text = body_text.removeprefix(f"{assistant_evidence.NO_EVIDENCE}\n\n")
+            else:
+                evidence = "Live weather for the selected city is unavailable."
+            result.reply = f"{safety.guard_output(evidence, limit=None)}\n\n{body_text}\n\n{safety.DISCLAIMER}"
+
     return {"data": {
         "reply": result.reply,
         "sources": result.sources,
         "warnings": [{"severity": w["severity"], "message": w["message"]} for w in result.warnings],
         "emergency": result.emergency,
     }}
+
+
+@app.get("/api/v1/weather/cities")
+async def search_weather_cities(
+    query: Annotated[str, Query(min_length=2, max_length=80)],
+    user: dict = Depends(current_user),
+):
+    try:
+        query = weather.city_query(query)
+    except ValueError:
+        raise ApiError(400, "INVALID_CITY", "Enter a city name, optionally followed by its region or country.") from None
+    _check_quota(_weather_counts, user["id"], 60, "weather lookup")
+    try:
+        cities = await weather.service.search(query)
+    except weather.Unavailable:
+        raise ApiError(503, "WEATHER_UNAVAILABLE", "City search is unavailable. Try again later.") from None
+    return {"data": {"cities": cities}}
+
+
+@app.get("/api/v1/weather/current")
+async def current_weather(
+    city_id: Annotated[int, Query(ge=1, le=weather.MAX_CITY_ID)],
+    user: dict = Depends(current_user),
+):
+    _check_quota(_weather_counts, user["id"], 60, "weather lookup")
+    try:
+        return {"data": await weather.service.forecast(city_id)}
+    except weather.CityNotFound:
+        raise ApiError(404, "INVALID_CITY", "Choose a city from the weather search results.") from None
 
 
 class SymptomSafetyDraft(BaseModel):

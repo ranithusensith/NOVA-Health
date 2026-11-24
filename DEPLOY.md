@@ -40,3 +40,12 @@ Without Twilio the app still works: it opens the phone's messages app with the a
 - "External AI is disabled": see the [provider approval and database requirements](docs/ai-privacy.md#storage-and-deployment).
 - 502 on first request: service was asleep; retry after a minute.
 - Docker build error: paste the last 20 lines of the Render build log.
+
+
+## Optional weather configuration
+
+Set `WEATHER_PROVIDER=open-meteo-public` only for approved non-commercial use. A commercial deployment requires the appropriate Open-Meteo subscription and `WEATHER_PROVIDER=open-meteo-customer` with `OPEN_METEO_API_KEY` in the backend secret store. The key is never needed by Flutter. An unset provider disables city search and live forecasts. Confirm the provider's attribution and use terms before enabling either mode. [Open-Meteo terms](https://open-meteo.com/en/terms) · [Provider plans](https://open-meteo.com/en/pricing)
+
+The backend uses fixed HTTPS destinations, a four-second deadline per upstream call and a per-account lookup quota. The in-memory cache is bounded per worker. It marks cached observations stale after the freshness window and drops expired values. The app shows each state and uses a separate labeled synthetic demo. Keep weather request query strings and upstream API URLs out of gateway, access, tracing and error logs. No database migration or device location permission is required.
+
+The NOVA Health proposal calls for weather data integration and weather-informed health notifications. P1-2 delivers city forecasts and on-demand outdoor planning information. The notification objective remains deferred pending safety review. The feature does not estimate individual medical risk or provide official severe-weather alerts.

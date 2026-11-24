@@ -165,7 +165,12 @@ The error envelope contains a fixed code and a patient-safe message. Upstream re
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/weather/current` | Current weather and health tips for the user's location |
+| GET | `/weather/cities?query=` | Search populated places by city and optional region or country |
+| GET | `/weather/current?city_id=` | Read model conditions and a three-day forecast for a selected city |
+
+Both endpoints require a signed-in session. City results include an ID, name, region and country. Current returns a `live`, `stale` or `unavailable` status. When values exist, it includes source and freshness timestamps, model conditions and a forecast by city date. Individual missing values are null. The Flutter demo uses a bundled sample independently of these endpoints.
+
+A reviewed assistant request can carry `weather: {"city_id": 123, "consent": true}` when the user opts in for that reply. NOVA fetches the selected city's weather after the existing AI consent and emergency checks. It appends only live evidence and labels the source as `weather`. The city selection and weather observations are excluded from the Gemini payload.
 
 ### 5.8 AI Assistant and Reports
 

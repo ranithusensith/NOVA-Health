@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../data/weather.dart';
 import '../services/api_client.dart';
 
 const aiDisclosure =
@@ -207,14 +208,17 @@ class _AiPrivacyScreenState extends State<AiPrivacyScreen> {
 
 class AiChatShare {
   const AiChatShare(
-      {this.includeEarlierQuestions = false, this.healthData = const []});
+      {this.includeEarlierQuestions = false, this.healthData = const [], this.weatherCityId});
 
   final bool includeEarlierQuestions;
   final List<String> healthData;
+  final int? weatherCityId;
 }
 
 class AiChatReview extends StatefulWidget {
-  const AiChatReview({super.key});
+  const AiChatReview({super.key, this.weatherCity});
+
+  final WeatherCity? weatherCity;
 
   @override
   State<AiChatReview> createState() => _AiChatReviewState();
@@ -223,6 +227,7 @@ class AiChatReview extends StatefulWidget {
 class _AiChatReviewState extends State<AiChatReview> {
   final _selected = <String>{};
   bool _includeEarlierQuestions = false;
+  bool _includeWeather = false;
   static const _categories = {
     'logs': 'Water, sleep, mood, meals and symptoms',
     'medications': 'Medications, allergies and safety warnings',
@@ -251,6 +256,15 @@ class _AiChatReviewState extends State<AiChatReview> {
                   setState(() => _includeEarlierQuestions = value == true),
               title: const Text('Include up to four earlier questions'),
             ),
+            if (widget.weatherCity case final city?)
+              CheckboxListTile(
+                dense: true,
+                value: _includeWeather,
+                contentPadding: EdgeInsets.zero,
+                onChanged: (value) => setState(() => _includeWeather = value == true),
+                title: Text('Include weather for ${city.label} in this reply'),
+                subtitle: const Text('NOVA uses Open-Meteo for this city. The city selection and forecast stay out of Gemini.'),
+              ),
             const Text('Optional health records for this reply'),
             for (final category in _categories.entries)
               CheckboxListTile(
@@ -277,7 +291,8 @@ class _AiChatReviewState extends State<AiChatReview> {
               context,
               AiChatShare(
                   includeEarlierQuestions: _includeEarlierQuestions,
-                  healthData: _selected.toList()),
+                  healthData: _selected.toList(),
+                  weatherCityId: _includeWeather ? widget.weatherCity?.id : null),
             ),
             child: const Text('Share question'),
           ),
