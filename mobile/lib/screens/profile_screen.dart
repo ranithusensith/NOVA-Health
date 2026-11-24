@@ -7,6 +7,7 @@ import '../data/care_repository.dart';
 import '../data/health_repository.dart';
 import '../data/profile_models.dart';
 import '../data/profile_repository.dart';
+import '../services/privacy_diagnostics.dart';
 import '../services/reminder_service.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
@@ -54,7 +55,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         if (profile.fullName.isNotEmpty) _name = profile.fullName;
       });
     } catch (_) {
-      debugPrint('Could not load health profile.');
+      logAppEvent('Could not load health profile.');
     }
   }
 
@@ -67,7 +68,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final fromProfile = await CareRepository.instance.fullName();
       if (mounted && fromProfile.isNotEmpty) setState(() => _name = fromProfile);
     } catch (_) {
-      debugPrint('Could not load profile name.');
+      logAppEvent('Could not load profile name.');
     }
   }
 

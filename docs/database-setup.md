@@ -19,6 +19,7 @@ Run each file in order and stop on any SQL error. Apply the full sequence before
 | 7 | [007_atomic_health_profile.sql](../backend/changes/007_atomic_health_profile.sql) | Save the caller's confirmed allergies, profile, and onboarding completion in one transaction. |
 | 8 | [008_medication_dose_occurrences.sql](../backend/changes/008_medication_dose_occurrences.sql) | Store scheduled dose times and enforce one log per identifiable occurrence. |
 | 9 | [009_lab_result_fidelity.sql](../backend/changes/009_lab_result_fidelity.sql) | Preserve reviewed lab result text, printed references and flags, and unknown report dates. Enforce exact numeric projections for reviewed rows. |
+| 10 | [010_legacy_chat_retention.sql](../backend/changes/010_legacy_chat_retention.sql) | Add owner-only expiration for legacy chats without expanding client privileges. |
 
 Supabase Auth owns account identities. A signup creates a profile with the account UUID, the optional display name, empty conditions and goals, and onboarding marked incomplete. Health details remain unset until the user enters them. Existing profile fields retain their saved values. AI processing consent still requires its own explicit opt-in.
 
@@ -35,6 +36,7 @@ Check the migration history and review a schema-only snapshot against these file
 - Apply `007` before rolling out the Flutter client that calls `save_health_profile`. Earlier clients keep their existing direct-write behavior until upgraded.
 - Apply `008` after `007` and before updating Flutter or FastAPI reports. It adds a stored generated column and indexes on `medication_logs`, which can rewrite and lock that table. Verify the schema change and PostgREST schema cache on a disposable copy. Existing dose logs stay in place.
 - Apply `009` after `008` and before updating FastAPI or Flutter. Verify PostgREST can see the new columns in a disposable copy. Existing lab rows retain their values and dates.
+- Apply `010` after `009`. Review the legacy chat schema on an isolated copy and follow the retention runbook before enabling the job.
 - Run the upgrade during a maintenance window. The signup trigger installation and constraint validation acquire locks. Take a backup before applying changes to an existing project.
 
 ## Application database contract
@@ -76,19 +78,21 @@ PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
 
 psql -X -v ON_ERROR_STOP=1 -v h6_before_migration=1 -f backend/changes/tests/lab_result_fidelity.sql
 PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
-  -f backend/changes/009_lab_result_fidelity.sql
+  -f backend/changes/009_lab_result_fidelity.sql \
+  -f backend/changes/010_legacy_chat_retention.sql
 
 psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/verify.sql \
   -f backend/changes/tests/patient_isolation.sql \
   -f backend/changes/tests/atomic_health_profile.sql \
   -f backend/changes/tests/medication_dose_occurrences.sql \
-  -f backend/changes/tests/lab_result_fidelity.sql
+  -f backend/changes/tests/lab_result_fidelity.sql \
+  -f backend/changes/tests/legacy_chat_retention.sql
 ```
 
 Start the test session as the disposable cluster administrator. The fixtures simulate the Auth schema, the Auth insert role, PostgREST roles and default API grants. They verify PostgreSQL access and integrity. Use separate loopback HTTP services or a disposable Supabase environment for token and HTTP integration.
 
-To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` commands above, then run all five verification files.
+To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run all six verification files.
 
 ## H2 patient isolation and verification limits
 
@@ -122,3 +126,17 @@ Earlier app versions can still write timestamp-only logs. Because those logs can
 `POST /api/v1/scan/report/confirm` validates the reviewed rows, checks ownership against the signed-in account and inserts them in a single batch. Reviewed result text is authoritative. Numeric `value` is populated only for an exact decimal. The printed range and flag are stored as text, and the original extracted result is retained separately when available. A missing report date stays `NULL`. Daily reports use only results with the selected report date. Medical records include undated results, and the assistant can read them when lab results are selected for that reply. The existing assistant redaction still applies to all outbound values.
 
 The database retains existing owner-scoped permissions and direct writes for older clients. The H6 constraint applies to `scan_reviewed` rows. Earlier client saves may contain inferred flags or fallback dates. Migration `009` leaves those records as stored because the original printed information may be unavailable.
+
+## H11 legacy chat retention
+
+The signed-in account can use `delete_legacy_ai_chats()` to remove all of its own legacy chat rows immediately. The RPC accepts no owner argument. Other accounts' rows and separate consent records are unaffected. Legacy rows remain unavailable for direct client reads or writes.
+
+Migration `010` installs the maintenance function without deleting any rows or scheduling a job. On a disposable copy, verify that the migration and legacy chat table have the expected owner, that delete triggers and foreign keys behave as intended, and that `created_at` is populated when that column exists. Timestamp values without a time zone are interpreted as UTC. A null timestamp or a missing `created_at` column means the row has no verifiable age and the job deletes it. An unsupported column type raises an error and requires schema review.
+
+After the retention policy is approved, run the following SQL daily from a trusted maintenance job that connects as the database migration owner and has authority over the legacy table. The function removes rows at least 720 hours old when the job runs and returns only a count. A fresh installation returns zero. Record success, count and timing, and alert on job failures without capturing query data or raw exception detail. Rows remain eligible until a delayed job next runs.
+
+```sql
+select public.prune_legacy_ai_chats();
+```
+
+Keep the function unavailable to API roles and manage maintenance credentials outside the app. Backup and provider retention have separate controls. [External AI privacy policy](ai-privacy.md)

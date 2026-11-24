@@ -13,6 +13,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 const _alice = '00000000-0000-0000-0000-000000000901';
 const _bob = '00000000-0000-0000-0000-000000000902';
 const _availability = MethodChannel('nova_health/healthkit');
+const _androidRead = MethodChannel('nova_health/health_connect');
 final _now = DateTime.utc(2026, 11, 24, 8);
 
 HealthDataPoint _point(
@@ -139,7 +140,10 @@ void main() {
       return available;
     });
   });
-  tearDown(() => messenger.setMockMethodCallHandler(_availability, null));
+  tearDown(() {
+    messenger.setMockMethodCallHandler(_availability, null);
+    messenger.setMockMethodCallHandler(_androidRead, null);
+  });
 
   test(
       'no Apple Health availability skips configuration, authorization, reads, and writes',
@@ -252,7 +256,21 @@ void main() {
       'Android uses Health Connect and skips a redundant authorization request',
       () async {
     health.androidAuthorized = true;
-    health.points = [_point(5, 75)];
+    messenger.setMockMethodCallHandler(_androidRead, (call) async {
+      expect(call.method, 'readHeartRate');
+      expect(call.arguments, {
+        'start': _now.subtract(const Duration(days: 7)).millisecondsSinceEpoch,
+        'end': _now.millisecondsSinceEpoch,
+      });
+      health.events.add('native-heart-read');
+      return [
+        {
+          'at':
+              _now.subtract(const Duration(minutes: 5)).millisecondsSinceEpoch,
+          'bpm': 75
+        },
+      ];
+    });
     final android = HeartSync(
         health: health,
         repository: repository,
@@ -264,8 +282,27 @@ void main() {
       'health-connect-availability',
       'configure',
       'has-permissions',
-      'read'
+      'native-heart-read'
     ]);
+  });
+
+  test('Android native query failure exposes no raw details and writes nothing',
+      () async {
+    health.androidAuthorized = true;
+    messenger.setMockMethodCallHandler(_androidRead, (_) async {
+      throw PlatformException(
+          code: 'HEART_RATE_UNAVAILABLE', details: 'synthetic private details');
+    });
+    final android = HeartSync(
+        health: health,
+        repository: repository,
+        platform: TargetPlatform.android,
+        now: () => _now);
+    await expectLater(
+        android.importRecent(),
+        throwsA(isA<HealthSyncException>().having((error) => error.message,
+            'message', startsWith('Could not read Health Connect'))));
+    expect(repository.samples, isNull);
   });
 
   group('heart-rate storage', () {

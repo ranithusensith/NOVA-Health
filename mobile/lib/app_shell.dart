@@ -14,6 +14,7 @@ import 'screens/home_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/scan_camera_screen.dart';
 import 'screens/track_screen.dart';
+import 'services/privacy_diagnostics.dart';
 import 'theme/nova_theme.dart';
 import 'widgets/floating_tab_bar.dart';
 import 'widgets/states.dart';
@@ -113,8 +114,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             clearNextMedication: next == null,
           );
         }
-      } catch (e) {
-        debugPrint('Could not load today\'s doses: $e');
+      } catch (_) {
+        logAppEvent('Could not load today\'s doses');
       }
       if (mounted && version == _loadVersion) {
         setState(() {
@@ -124,7 +125,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
-      debugPrint('Could not load today\'s data: $e');
+      logAppEvent('Could not load today\'s data');
       if (mounted && version == _loadVersion) {
         setState(() {
           _loading = false;

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -11,6 +12,45 @@ class ApiException implements Exception {
   ApiException(this.message);
   final String message;
 
+  factory ApiException.fromResponse(int status, Object? error, String path) {
+    final code = error is Map ? error['code'] : null;
+    final message = switch (code) {
+      'UNAUTHORIZED' => 'Sign in again.',
+      'FORBIDDEN' => 'Your account cannot perform this action.',
+      'AUTH_UNAVAILABLE' || 'AUTH_RESPONSE_INVALID' =>
+        'Could not verify your session. Try again later.',
+      'AI_CONSENT_REQUIRED' =>
+        'Review and enable Google Gemini processing in Privacy and consent.',
+      'AI_DISCLOSURE_OUTDATED' => 'Update the app to review the current AI disclosure.',
+      'AI_PRIVACY_UNAVAILABLE' => 'External AI is unavailable. Check Privacy and consent or try again later.',
+      'AI_RESPONSE_INVALID' => 'The AI returned an unreadable answer. Try again.',
+      'AI_REQUEST_REJECTED' || 'AI_PROVIDER_AUTH_FAILED' || 'AI_UNAVAILABLE' =>
+        'The AI service is unavailable. Try again later.',
+      'CHAT_DELETION_UNVERIFIED' => 'Could not verify older chat deletion. Try again later.',
+      'REVIEW_REQUIRED' when path.endsWith('/report/confirm') =>
+        'Check the results against your report before saving.',
+      'REVIEW_REQUIRED' when path.endsWith('/scan/food') =>
+        'Review the photo and retake it with only the food visible.',
+      'REVIEW_REQUIRED' => 'Review the information and remove identifying details before sharing.',
+      'OCR_UNAVAILABLE' => 'Private text extraction is unavailable. You can enter clinical text manually.',
+      'SCAN_FAILED' => 'Could not find the expected details. Check the image or reviewed text and try again.',
+      'INVALID_INPUT' => 'Check the information you entered and try again.',
+      'PRESCRIPTION_SAVE_UNVERIFIED' =>
+        'Could not verify that the prescription was saved. Check Medications before trying again.',
+      'LAB_SAVE_UNVERIFIED' =>
+        'Could not verify the save. Check Medical records before trying again.',
+      'SOS_UNAVAILABLE' =>
+        'Could not read your emergency contacts. Call 1990 or your contacts directly.',
+      'SOS_STATUS_UNAVAILABLE' => 'Delivery status is unavailable for this SOS.',
+      'RATE_LIMITED' when path == '/api/v1/emergency/trigger' =>
+        'An SOS was recently requested. Check its status or call 1990 now.',
+      'RATE_LIMITED' => 'Too many requests. Try again later.',
+      _ when status == 401 => 'Sign in again.',
+      _ => 'NOVA could not process this request. Try again.',
+    };
+    return ApiException(message);
+  }
+
   @override
   String toString() => message;
 }
@@ -19,6 +59,8 @@ class ApiException implements Exception {
 class ApiClient {
   ApiClient._();
   static final ApiClient instance = ApiClient._();
+  final _revocations = ValueNotifier<int>(0);
+  ValueListenable<int> get aiConsentRevocations => _revocations;
 
   Map<String, String> get _authHeaders {
     final token = Supabase.instance.client.auth.currentSession?.accessToken;
@@ -57,18 +99,7 @@ class ApiClient {
     }
 
     final body = await streamed.stream.bytesToString();
-    final Map<String, dynamic> json;
-    try {
-      json = jsonDecode(body) as Map<String, dynamic>;
-    } catch (_) {
-      throw ApiException('Unexpected server response (${streamed.statusCode}).');
-    }
-
-    if (streamed.statusCode >= 200 && streamed.statusCode < 300) {
-      return (json['data'] as Map).cast<String, dynamic>();
-    }
-    final message = (json['error'] as Map?)?['message'] as String?;
-    throw ApiException(message ?? 'Request failed (${streamed.statusCode}).');
+    return _responseData(body, streamed.statusCode, path);
   }
 
   Future<Map<String, dynamic>> _requestJson(
@@ -90,17 +121,23 @@ class ApiClient {
     } catch (_) {
       throw ApiException('Cannot reach the server. Is the backend running?');
     }
-    final Map<String, dynamic> json;
+    return _responseData(res.body, res.statusCode, path);
+  }
+
+  Map<String, dynamic> _responseData(String body, int status, String path) {
+    final Object? json;
     try {
-      json = jsonDecode(res.body) as Map<String, dynamic>;
-    } catch (_) {
-      throw ApiException('Unexpected server response (${res.statusCode}).');
+      json = jsonDecode(body);
+    } on FormatException {
+      throw ApiException('Unexpected server response. Try again.');
     }
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      return (json['data'] as Map).cast<String, dynamic>();
+    if (status < 200 || status >= 300) {
+      throw ApiException.fromResponse(status, json is Map ? json['error'] : null, path);
     }
-    final message = (json['error'] as Map?)?['message'] as String?;
-    throw ApiException(message ?? 'Request failed (${res.statusCode}).');
+    if (json is Map && json['data'] is Map<String, dynamic>) {
+      return json['data'] as Map<String, dynamic>;
+    }
+    throw ApiException('Unexpected server response. Try again.');
   }
 
   Future<Map<String, dynamic>> _postJson(
@@ -114,15 +151,19 @@ class ApiClient {
   }
 
   Future<void> setAiConsent(bool enabled) async {
+    final owner = aiAccountId;
     await _postJson('/api/v1/privacy/ai', {
       'enabled': enabled,
       if (enabled) 'disclosure_version': AiPrivacyStatus.disclosureVersion,
     });
+    if (!enabled && owner != null && aiAccountId == owner) _revocations.value++;
   }
 
   Future<int> deleteLegacyAiChats() async {
     final result = await _requestJson('DELETE', '/api/v1/privacy/ai/chats');
-    return result['deleted'] as int;
+    final count = result['deleted'];
+    if (count is int && count >= 0) return count;
+    throw ApiException('Could not verify older chat deletion. Try again later.');
   }
 
   Future<String> extractMedicalText(XFile file) async {

@@ -37,6 +37,7 @@ class HeartSync {
 
   static final HeartSync instance = HeartSync();
   static const _healthKit = MethodChannel('nova_health/healthkit');
+  static const _healthConnect = MethodChannel('nova_health/health_connect');
   static const _types = [HealthDataType.HEART_RATE];
   static const _access = [HealthDataAccess.READ];
 
@@ -83,7 +84,7 @@ class HeartSync {
     return SyncResult(found: samples.length, imported: imported);
   }
 
-  Future<List<HealthDataPoint>> _read(
+  Future<List<HeartSample>> _read(
       DateTime start, DateTime end, String accountId) async {
     try {
       final available = _isAppleHealth
@@ -110,8 +111,35 @@ class HeartSync {
             : 'Heart rate access was not allowed. Allow it for NOVA Health in Health Connect and try again.');
       }
       _requireSameAccount(accountId);
-      return await _health.getHealthDataFromTypes(
+      if (!_isAppleHealth) {
+        final rows =
+            await _healthConnect.invokeListMethod<Map>('readHeartRate', {
+          'start': start.millisecondsSinceEpoch,
+          'end': end.millisecondsSinceEpoch,
+        });
+        if (rows == null) {
+          throw const FormatException('Missing heart rate data.');
+        }
+        return [
+          for (final row in rows)
+            HeartSample(
+              at: DateTime.fromMillisecondsSinceEpoch(row['at'] as int),
+              bpm: row['bpm'] as int,
+            ),
+        ];
+      }
+      final points = await _health.getHealthDataFromTypes(
           types: _types, startTime: start, endTime: end);
+      return [
+        for (final point in points)
+          if (point
+              case HealthDataPoint(
+                type: HealthDataType.HEART_RATE,
+                unit: HealthDataUnit.BEATS_PER_MINUTE,
+                value: NumericHealthValue(:final numericValue),
+              ) when numericValue.isFinite)
+            HeartSample(bpm: numericValue.round(), at: point.dateFrom),
+      ];
     } on HealthSyncException {
       rethrow;
     } catch (_) {
@@ -130,30 +158,19 @@ class HeartSync {
   }
 
   List<HeartSample> _selectSamples(
-      List<HealthDataPoint> points, DateTime start, DateTime end) {
-    final sorted = [...points]
-      ..sort((a, b) => a.dateFrom.compareTo(b.dateFrom));
+      List<HeartSample> points, DateTime start, DateTime end) {
+    final sorted = [...points]..sort((a, b) => a.at.compareTo(b.at));
     final samples = <HeartSample>[];
     DateTime? lastKept;
     // Preserve the existing one-reading-per-ten-minute and 1000-reading limits.
     for (final point in sorted) {
-      final value = point.value;
-      if (point.type != HealthDataType.HEART_RATE ||
-          point.unit != HealthDataUnit.BEATS_PER_MINUTE ||
-          point.dateFrom.isBefore(start) ||
-          point.dateFrom.isAfter(end) ||
-          value is! NumericHealthValue ||
-          !value.numericValue.isFinite) {
+      if (point.at.isBefore(start) || point.at.isAfter(end)) continue;
+      if (point.bpm < 20 || point.bpm > 250) continue;
+      if (lastKept != null && point.at.difference(lastKept).inMinutes < 10) {
         continue;
       }
-      final bpm = value.numericValue.round();
-      if (bpm < 20 || bpm > 250) continue;
-      if (lastKept != null &&
-          point.dateFrom.difference(lastKept).inMinutes < 10) {
-        continue;
-      }
-      lastKept = point.dateFrom;
-      samples.add(HeartSample(bpm: bpm, at: point.dateFrom));
+      lastKept = point.at;
+      samples.add(point);
     }
     return samples.length > 1000
         ? samples.sublist(samples.length - 1000)

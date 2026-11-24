@@ -5,6 +5,7 @@ import '../data/care_models.dart';
 import '../data/care_repository.dart';
 import '../data/health_repository.dart';
 import '../data/sample_data.dart';
+import '../services/privacy_diagnostics.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/glass.dart';
@@ -76,7 +77,7 @@ class _MedicationsScreenState extends State<MedicationsScreen> with WidgetsBindi
         showNovaToast(context, inserted == null ? 'This dose was already logged' : '${slot.medication.name} marked as taken');
       }
     } catch (e) {
-      debugPrint('logDose failed: $e');
+      logAppEvent('logDose failed');
       if (mounted) showNovaToast(context, friendlyError(e));
     } finally {
       if (mounted) setState(() => _busy.remove(id));
@@ -92,7 +93,7 @@ class _MedicationsScreenState extends State<MedicationsScreen> with WidgetsBindi
     try {
       await CareRepository.instance.undoDose(slot.occurrence, logId);
     } catch (e) {
-      debugPrint('undoLastDose failed: $e');
+      logAppEvent('undoLastDose failed');
       if (mounted) showNovaToast(context, friendlyError(e));
     } finally {
       if (mounted) setState(() => _busy.remove(id));
@@ -494,7 +495,7 @@ class _MedicationEditorState extends State<_MedicationEditor> {
       }
       navigator.pop(true);
     } catch (e) {
-      debugPrint('Saving medication failed: $e');
+      logAppEvent('Saving medication failed');
       if (mounted) {
         setState(() {
           _saving = false;

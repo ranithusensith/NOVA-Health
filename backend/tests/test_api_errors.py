@@ -104,6 +104,22 @@ def test_invalid_authorization_header_never_leaves_api(upstreams, caplog):
     assert not requests
 
 
+def test_multipart_parser_does_not_log_an_untrusted_header(upstreams, caplog):
+    client, _, requests = upstreams
+    body = (
+        '--fixture\r\nContent-Disposition: form-data; name="image"; filename="fixture"\r\n'
+        f'!{MARKER}\r\n\r\nsynthetic\r\n--fixture--\r\n'
+    ).encode()
+    response = client.post(
+        "/api/v1/scan/food",
+        headers={**AUTH, "Content-Type": "multipart/form-data; boundary=fixture"},
+        content=body,
+    )
+    assert_error(response, 400, "INVALID_INPUT", caplog)
+    assert not requests
+    assert all(record.name != "python_multipart.multipart" for record in caplog.records)
+
+
 @pytest.mark.parametrize("provider,status,code", [
     (httpx.ReadTimeout(MARKER), 503, "AI_UNAVAILABLE"),
     (httpx.Response(503, text=MARKER), 503, "AI_UNAVAILABLE"),
@@ -172,6 +188,19 @@ def test_valid_non_report_keeps_scan_failed_code(upstreams, caplog):
     client, responses, _ = upstreams
     responses["provider"] = provider_response({"is_report": False, "results": []})
     response = client.post("/api/v1/scan/report", headers=AUTH, json={"text": "Synthetic grocery list", "reviewed": True})
+    assert_error(response, 422, "SCAN_FAILED", caplog)
+
+
+def test_scan_error_never_returns_exception_details(upstreams, caplog, monkeypatch):
+    client, _, _ = upstreams
+
+    async def broken_scan(*args, **kwargs):
+        raise main.scan.ScanError(MARKER)
+
+    monkeypatch.setattr(main.scan, "scan_report", broken_scan)
+    response = client.post(
+        "/api/v1/scan/report", headers=AUTH, json={"text": "Synthetic report", "reviewed": True},
+    )
     assert_error(response, 422, "SCAN_FAILED", caplog)
 
 

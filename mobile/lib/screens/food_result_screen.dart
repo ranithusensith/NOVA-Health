@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/health_repository.dart';
 import '../data/scan_models.dart';
+import '../services/privacy_diagnostics.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/glass.dart';
@@ -71,8 +72,8 @@ class _FoodResultScreenState extends State<FoodResultScreen> {
       HealthRepository.notifyChanged();
       navigator.popUntil((r) => r.isFirst);
       messenger.showSnackBar(SnackBar(content: Text('$description saved')));
-    } catch (e) {
-      debugPrint('Saving meal failed: $e');
+    } catch (_) {
+      logAppEvent('Saving meal failed');
       if (mounted) setState(() => _saving = false);
       messenger.showSnackBar(const SnackBar(content: Text('Could not save. Check your connection and try again.')));
     }
