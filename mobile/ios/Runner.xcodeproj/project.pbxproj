@@ -271,7 +271,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" build";
+			shellScript = "set -e\ncase \"$CONFIGURATION:${FLUTTER_BUILD_MODE:-$CONFIGURATION}\" in\n  [Dd]ebug*:[Dd]ebug*) ;;\n  [Dd]ebug*:*|*:[Dd]ebug*) echo 'error: NOVA build configuration: Xcode and Flutter debug modes must agree.' >&2; exit 1 ;;\n  *) \"$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart\" \"$SRCROOT/../tool/validate_release_config.dart\" ;;\nesac\n/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" build";
 		};
 /* End PBXShellScriptBuildPhase section */
 

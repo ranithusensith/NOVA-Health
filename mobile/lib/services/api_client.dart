@@ -26,20 +26,16 @@ class ApiClient {
     return {'Authorization': 'Bearer $token'};
   }
 
-  String? get aiAccountId => Supabase.instance.client.auth.currentUser?.id;
+  String? get aiAccountId => AppConfig.current.canConnect
+      ? Supabase.instance.client.auth.currentUser?.id
+      : null;
 
   Uri _uri(String path) {
-    final uri = Uri.parse('${AppConfig.apiUrl}$path');
-    if (path.startsWith('/api/v1/assistant/') ||
-        path.startsWith('/api/v1/privacy/') ||
-        (path.startsWith('/api/v1/scan/') && path != '/api/v1/scan/prescription/confirm')) {
-      const release = bool.fromEnvironment('dart.vm.product');
-      const loopback = {'localhost', '127.0.0.1', '::1', '10.0.2.2'};
-      if (uri.scheme != 'https' && (release || uri.scheme != 'http' || !loopback.contains(uri.host))) {
-        throw ApiException('External AI requests require a secure connection to NOVA.');
-      }
+    final config = AppConfig.current;
+    if (!config.canConnect) {
+      throw ApiException('Real NOVA services are unavailable with this app configuration.');
     }
-    return uri;
+    return Uri.parse('${config.apiBase}$path');
   }
 
   Future<Map<String, dynamic>> _sendImage(String path, XFile file, {bool reviewed = false}) async {
@@ -114,9 +110,6 @@ class ApiClient {
   }) => _requestJson('POST', path, payload: payload, timeout: timeout);
 
   Future<AiPrivacyStatus> aiPrivacyStatus() async {
-    if (AppConfig.useMockApi) {
-      return const AiPrivacyStatus(enabled: false, providerAvailable: false, version: '');
-    }
     return AiPrivacyStatus.fromJson(await _getJson('/api/v1/privacy/ai'));
   }
 
@@ -138,20 +131,8 @@ class ApiClient {
   }
 
   // ---------------------------------------------------------------- public API
-  // With USE_MOCK_API=true these return sample data, so the UI can be built
-  // and tested without the backend or an AI key.
 
   Future<PrescriptionScan> scanPrescription(String reviewedText) async {
-    if (AppConfig.useMockApi) {
-      await Future<void>.delayed(const Duration(milliseconds: 1400));
-      return const PrescriptionScan(
-        medications: [
-          ScanMedication(name: 'Cetirizine', dosage: '10 mg', frequency: 'once a day', durationDays: 5),
-          ScanMedication(name: 'Paracetamol', dosage: '500 mg', frequency: 'every 8 hours', durationDays: 3),
-        ],
-        confidence: 0.9,
-      );
-    }
     return PrescriptionScan.fromJson(await _postJson('/api/v1/scan/prescription', {'text': reviewedText, 'reviewed': true}));
   }
 
@@ -169,19 +150,6 @@ class ApiClient {
   }
 
   Future<ReportScan> scanReport(String reviewedText) async {
-    if (AppConfig.useMockApi) {
-      await Future<void>.delayed(const Duration(milliseconds: 1400));
-      return ReportScan(
-        scanId: '00000000-0000-4000-8000-000000000001',
-        reportType: 'Full blood count',
-        confidence: 0.9,
-        results: [
-          LabResultDraft(test: 'Haemoglobin', valueText: '11.2', unit: 'g/dL', referenceText: '13.0 – 17.0', reportedFlag: 'L'),
-          LabResultDraft(test: 'White blood cells', valueText: '7,400', unit: '/uL', referenceText: '4,000 – 11,000'),
-          LabResultDraft(test: 'Platelets', valueText: '<390', unit: '10^3/uL', referenceText: '150 – 450'),
-        ],
-      );
-    }
     return ReportScan.fromJson(await _postJson('/api/v1/scan/report', {'text': reviewedText, 'reviewed': true}));
   }
 
@@ -191,7 +159,6 @@ class ApiClient {
     DateTime? reviewedDate,
     List<LabResultDraft> reviewedRows,
   ) async {
-    if (AppConfig.useMockApi) return 0;
     if (expectedUserId == null || aiAccountId != expectedUserId) {
       throw ApiException('Sign in to the account that opened this report.');
     }
@@ -207,23 +174,11 @@ class ApiClient {
   }
 
   Future<FoodScan> scanFood(XFile file) async {
-    if (AppConfig.useMockApi) {
-      await Future<void>.delayed(const Duration(milliseconds: 1400));
-      return const FoodScan(
-        description: 'Rice and chicken curry',
-        calories: 650,
-        proteinG: 28,
-        carbsG: 90,
-        fatG: 18,
-        confidence: 0.8,
-      );
-    }
     return FoodScan.fromJson(await _sendImage('/api/v1/scan/food', file, reviewed: true));
   }
 
   /// Checks the question on NOVA's backend before AI consent or sharing.
   Future<String?> checkAssistantEmergency(String message) async {
-    if (AppConfig.useMockApi) return null;
     final data = await _postJson('/api/v1/assistant/chat', {
       'message': message,
       'emergency_only': true,
@@ -233,11 +188,6 @@ class ApiClient {
 
   /// Sends a message to the AI assistant and returns its reply text.
   Future<String> chat(String message, {List<String> healthData = const [], List<String> recentQuestions = const []}) async {
-    if (AppConfig.useMockApi) {
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      return 'Sample reply: your sleep was short and water was low this week. '
-          'Try an earlier bedtime and a glass of water now.\n\nGuidance, not medical advice.';
-    }
     final data = await _postJson('/api/v1/assistant/chat', {
       'message': message,
       'reviewed': true,
@@ -256,21 +206,11 @@ class ApiClient {
   Future<String> dailyReport(DateTime day) async {
     final date = '${day.year.toString().padLeft(4, '0')}-'
         '${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
-    if (AppConfig.useMockApi) {
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      return 'Sample report for $date: sleep was a little short and water was below goal. '
-          'Try a glass of water with each meal and a wind-down routine 30 minutes before bed.\n\n'
-          'Guidance, not medical advice.';
-    }
     final data = await _getJson('/api/v1/reports/daily?date=$date');
     return (data['report'] as String?) ?? '';
   }
 
   Future<EmergencyResult> triggerEmergencyDetailed() async {
-    if (AppConfig.useMockApi) {
-      await Future<void>.delayed(const Duration(milliseconds: 800));
-      return const EmergencyResult(status: SosDeliveryState.simulated);
-    }
     return EmergencyResult.fromJson(await _postJson(
       '/api/v1/emergency/trigger', const {}, timeout: const Duration(seconds: 12),
     ));
