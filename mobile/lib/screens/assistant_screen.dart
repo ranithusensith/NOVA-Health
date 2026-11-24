@@ -27,7 +27,9 @@ class ChatItem {
 /// glass input bar. Replies come from POST /api/v1/assistant/chat
 /// using ApiClient.chat.
 class AssistantScreen extends StatefulWidget {
-  const AssistantScreen({super.key});
+  const AssistantScreen({super.key, this.api});
+
+  final ApiClient? api;
 
   @override
   State<AssistantScreen> createState() => _AssistantScreenState();
@@ -36,10 +38,12 @@ class AssistantScreen extends StatefulWidget {
 class _AssistantScreenState extends State<AssistantScreen> {
   static const _greeting = "Hi! Ask me anything about your sleep, water, mood or medications.";
   static const _suggestions = ['Why am I tired this week?', 'Did I drink enough today?', 'Summarise my sleep'];
+  static const _transcriptLimit = 100;
 
   final _scroll = ScrollController();
   final _input = TextEditingController();
   final _focus = FocusNode();
+  late final _api = widget.api ?? ApiClient.instance;
 
   /// Increments on "New conversation" so late replies from an old chat are dropped.
   int _conversation = 0;
@@ -48,7 +52,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
   late List<ChatItem> _items = [ChatItem.ai(_greeting)];
 
   @override
+  void initState() {
+    super.initState();
+    _api.aiConsentRevocations.addListener(_reset);
+  }
+
+  @override
   void dispose() {
+    _api.aiConsentRevocations.removeListener(_reset);
     _scroll.dispose();
     _input.dispose();
     _focus.dispose();
@@ -59,7 +70,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     final text = raw.trim();
     if (text.isEmpty || _waiting) return;
     final conversation = _conversation;
-    final api = ApiClient.instance;
+    final api = _api;
     final owner = api.aiAccountId;
     if (owner == null) return;
     bool current() => mounted && conversation == _conversation &&
@@ -75,7 +86,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
         reply = ChatItem.ai(emergency);
         return;
       }
-      if (!await ensureAiConsent(context) || !mounted || !current()) return;
+      if (!await ensureAiConsent(context, client: api) || !mounted || !current()) return;
       final sharing = await showDialog<AiChatShare>(
         context: context,
         builder: (_) => const AiChatReview(),
@@ -103,7 +114,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
       if (current()) {
         setState(() {
           _waiting = false;
-          _items = [..._items.where((item) => item.kind != ChatKind.typing), if (reply != null) reply];
+          final items = [..._items.where((item) => item.kind != ChatKind.typing), if (reply != null) reply];
+          _items = items.length > _transcriptLimit
+              ? items.sublist(items.length - _transcriptLimit)
+              : items;
         });
         if (reply != null) _scrollToEnd();
       }
@@ -111,11 +125,13 @@ class _AssistantScreenState extends State<AssistantScreen> {
   }
 
   void _reset() {
+    _input.clear();
     setState(() {
       _conversation++;
       _waiting = false;
       _items = [ChatItem.ai(_greeting)];
     });
+    if (_scroll.hasClients) _scroll.jumpTo(0);
   }
 
   void _scrollToEnd() {

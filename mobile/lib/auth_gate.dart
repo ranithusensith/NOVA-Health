@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -15,18 +17,60 @@ class AuthGate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!AppConfig.current.canConnect) {
-      return ConfigurationErrorScreen(message: AppConfig.current.problem ?? 'Real mode is unavailable.');
+      return ConfigurationErrorScreen(
+          message: AppConfig.current.problem ?? 'Real mode is unavailable.');
     }
 
-    final auth = Supabase.instance.client.auth;
-    return StreamBuilder<AuthState>(
-      stream: auth.onAuthStateChange,
-      builder: (context, snapshot) {
-        final session = snapshot.data?.session ?? auth.currentSession;
-        return session == null ? const LoginScreen() : _SignedInGate(key: ValueKey(session.user.id));
-      },
-    );
+    final session = Supabase.instance.client.auth.currentSession;
+    return session == null
+        ? const LoginScreen()
+        : _SignedInGate(key: ValueKey(session.user.id));
   }
+}
+
+/// Replace the entire navigator, including modals, at every account boundary.
+class AccountNavigation extends StatefulWidget {
+  const AccountNavigation({
+    super.key,
+    required this.initialOwner,
+    required this.owners,
+    required this.builder,
+  });
+
+  final String? initialOwner;
+  final Stream<String?> owners;
+  final Widget Function(GlobalKey<NavigatorState>) builder;
+
+  @override
+  State<AccountNavigation> createState() => _AccountNavigationState();
+}
+
+class _AccountNavigationState extends State<AccountNavigation> {
+  late String? _owner = widget.initialOwner;
+  var _navigator = GlobalKey<NavigatorState>();
+  late final StreamSubscription<String?> _subscription;
+
+  @override
+  void initState() {
+    super.initState();
+    // Handle each event even when multiple account switches share a frame.
+    _subscription = widget.owners.listen((owner) {
+      if (owner == _owner) return;
+      setState(() {
+        _owner = owner;
+        _navigator = GlobalKey<NavigatorState>();
+      });
+    }, onError: (Object _) {});
+  }
+
+  @override
+  void dispose() {
+    unawaited(_subscription.cancel());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(_navigator);
 }
 
 /// After sign-in: ask the essential health questions once, then open the app.
@@ -38,7 +82,8 @@ class _SignedInGate extends StatefulWidget {
 }
 
 class _SignedInGateState extends State<_SignedInGate> {
-  late final Future<bool> _needsOnboarding = ProfileRepository.instance.needsOnboarding();
+  late final Future<bool> _needsOnboarding =
+      ProfileRepository.instance.needsOnboarding();
   bool _done = false;
 
   @override

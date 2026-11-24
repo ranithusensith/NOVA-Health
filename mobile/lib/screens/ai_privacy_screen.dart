@@ -14,8 +14,8 @@ const aiDisclosure =
     'Google may retain requests and responses under its service terms. Turning '
     'off sharing blocks future AI requests. It cannot recall data already sent.';
 
-Future<bool> ensureAiConsent(BuildContext context) async {
-  final api = ApiClient.instance;
+Future<bool> ensureAiConsent(BuildContext context, {ApiClient? client}) async {
+  final api = client ?? ApiClient.instance;
   final owner = api.aiAccountId;
   final status = await api.aiPrivacyStatus();
   if (!context.mounted || owner == null || owner != api.aiAccountId) {
@@ -126,6 +126,7 @@ class _AiPrivacyScreenState extends State<AiPrivacyScreen> {
         title: const Text('Delete older chats?'),
         content: const Text(
           'This permanently removes the older chat records from your active NOVA account. '
+          'Use New conversation in the Assistant to clear its current transcript. '
           'Copies held by Google or in backups follow their separate retention policies.',
         ),
         actions: [

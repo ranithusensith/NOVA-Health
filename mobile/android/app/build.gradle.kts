@@ -64,5 +64,7 @@ tasks.configureEach {
 }
 
 dependencies {
+    // Keep the heart-rate reader on the same Health Connect client as the permission plugin.
+    implementation("androidx.health.connect:connect-client:1.1.0-alpha07")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

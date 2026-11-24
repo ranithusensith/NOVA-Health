@@ -105,6 +105,21 @@ def test_simulation_is_explicit_and_keeps_contact_data_out_of_logs(client, db, c
         assert sensitive not in str(db.audit)
 
 
+def test_unexpected_background_audit_failure_has_no_trace(client, db, caplog):
+    secret = f"Synthetic contact {PHONE_A} and private note"
+
+    async def broken_audit(*args):
+        raise RuntimeError(secret)
+
+    db.insert = broken_audit
+    response = client.post(TRIGGER, json={"note": secret})
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "simulated"
+    assert "SOS audit could not be recorded" in caplog.text
+    assert secret not in response.text + caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
 def test_manual_mode_requires_the_phone_composer(client, monkeypatch):
     monkeypatch.setenv("NOTIFY_PROVIDER", "manual")
     result = client.post(TRIGGER).json()["data"]

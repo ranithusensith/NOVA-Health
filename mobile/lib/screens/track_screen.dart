@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../data/health_repository.dart';
 import '../data/sample_data.dart';
+import '../services/privacy_diagnostics.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/mood_face.dart';
@@ -54,8 +55,8 @@ class _TrackScreenState extends State<TrackScreen> {
       await action();
       widget.onLogged();
       _toast(done);
-    } catch (e) {
-      debugPrint('Track save failed: $e');
+    } catch (_) {
+      logAppEvent('Track save failed');
       _toast('Could not save. Check your connection and try again.');
     } finally {
       if (mounted) setState(() => _busy = false);

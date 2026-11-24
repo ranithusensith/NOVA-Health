@@ -15,8 +15,7 @@ import '../data/care_models.dart';
 import '../data/care_repository.dart';
 import '../data/reminder_plan.dart';
 import '../screens/medications_screen.dart';
-
-final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
+import 'privacy_diagnostics.dart';
 
 /// One account's dated notification batch. Network reads never hold the native queue.
 class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
@@ -51,6 +50,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
   final Future<List<Map<String, dynamic>>> Function(String) _loadMedicines;
   final DateTime Function() _clock;
   final _plugin = FlutterLocalNotificationsPlugin();
+  GlobalKey<NavigatorState>? navigatorKey;
   SharedPreferences? _prefs;
   Future<void> _nativeTail = Future.value();
   StreamSubscription<AuthState>? _authEvents;
@@ -126,7 +126,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
         await _invalidateNotifications();
       }
     } catch (_) {
-      debugPrint('Reminders could not start or clear the previous schedule.');
+      logAppEvent('Reminders could not start or clear the previous schedule.');
     }
   }
 
@@ -166,7 +166,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _onTap(NotificationResponse response) {
-    final context = appNavigatorKey.currentContext;
+    final context = navigatorKey?.currentContext;
     if (context != null &&
         _enabled &&
         !_signingOut &&
@@ -187,7 +187,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
         return (await _ios?.checkPermissions())?.isEnabled ?? false;
       }
     } catch (_) {
-      debugPrint('Could not check notification permission.');
+      logAppEvent('Could not check notification permission.');
     }
     return false;
   }
@@ -202,7 +202,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
             false;
       }
     } catch (_) {
-      debugPrint('Could not request notification permission.');
+      logAppEvent('Could not request notification permission.');
     }
     return false;
   }
@@ -219,7 +219,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
     try {
       await _android?.requestExactAlarmsPermission();
     } catch (_) {
-      debugPrint('Could not request exact alarm permission.');
+      logAppEvent('Could not request exact alarm permission.');
     }
   }
 
@@ -383,7 +383,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
       });
     } catch (_) {
       // A failed refresh for the same account can keep its previous bounded schedule.
-      debugPrint('Could not refresh local reminders.');
+      logAppEvent('Could not refresh local reminders.');
     }
   }
 

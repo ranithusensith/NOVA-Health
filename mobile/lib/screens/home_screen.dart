@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../data/care_repository.dart';
 import '../data/health_repository.dart';
 import '../data/sample_data.dart';
+import '../services/privacy_diagnostics.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/activity_rings.dart';
 import '../widgets/content.dart';
@@ -387,7 +388,7 @@ class _NextMedCardState extends State<_NextMedCard> {
                 }),
         ));
     } catch (e) {
-      debugPrint('logDose failed: $e');
+      logAppEvent('logDose failed');
       if (messenger.mounted) {
         messenger.showSnackBar(SnackBar(behavior: SnackBarBehavior.floating, content: Text(friendlyError(e))));
       }
@@ -565,7 +566,7 @@ class _MoodCardState extends State<_MoodCard> {
     try {
       await HealthRepository.instance.logMood(i);
     } catch (e) {
-      debugPrint('logMood failed: $e');
+      logAppEvent('logMood failed');
       if (mounted) {
         setState(() => _selected = previous);
         showNovaToast(context, friendlyError(e));

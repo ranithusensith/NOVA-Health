@@ -60,7 +60,16 @@ class _LoginScreenState extends State<LoginScreen> {
       }
       // On success AuthGate swaps this screen for the app automatically.
     } on AuthException catch (e) {
-      if (mounted) setState(() => _error = e.message);
+      if (mounted) {
+        setState(() => _error = switch (e.code) {
+          'email_not_confirmed' => 'Confirm your email before signing in.',
+          'invalid_credentials' => 'Check your email and password and try again.',
+          'weak_password' => 'Choose a stronger password and try again.',
+          'over_request_rate_limit' || 'over_email_send_rate_limit' =>
+            'Too many attempts. Wait a moment and try again.',
+          _ => 'Could not complete sign-in or signup. Please try again.',
+        });
+      }
     } catch (_) {
       if (mounted) {
         setState(() => _error = 'Something went wrong. Check your connection and try again.');

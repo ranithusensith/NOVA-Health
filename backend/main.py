@@ -46,9 +46,15 @@ from db import DBError, InvalidDBResponse, UserDB  # noqa: E402
 from upstream import decode_json  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
-# httpx INFO logs include PostgREST URLs with account IDs and health filters.
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+# These libraries can log URLs, headers or parser fragments controlled by callers.
+for sensitive_logger in (
+    "httpx", "httpcore", "python_multipart", "python_multipart.multipart",
+    "multipart", "multipart.multipart", "uvicorn.access",
+):
+    library_log = logging.getLogger(sensitive_logger)
+    library_log.disabled = True
+    library_log.propagate = False
+    library_log.handlers[:] = [logging.NullHandler()]
 error_log = logging.getLogger("nova.api")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -476,8 +482,8 @@ async def scan_prescription(
     text, identifiers = await _reviewed_clinical_text(body, user, db)
     try:
         result = await scan.scan_prescription(text, identifiers=identifiers, authorize=partial(ai_privacy.require_consent, db))
-    except scan.ScanError as e:
-        raise ApiError(422, "SCAN_FAILED", str(e)) from None
+    except scan.ScanError:
+        raise ApiError(422, "SCAN_FAILED", "We could not find a prescription in this photo. Try again with better light.") from None
     meds = [m.model_dump() for m in result.medications]
     safety_check = await prescription_safety(db, [{**m, "times": []} for m in meds])
     return {"data": {
@@ -542,8 +548,8 @@ async def scan_report(
             text, identifiers=identifiers, today=tools.local_today(),
             authorize=partial(ai_privacy.require_consent, db),
         )
-    except scan.ScanError as e:
-        raise ApiError(422, "SCAN_FAILED", str(e)) from None
+    except scan.ScanError:
+        raise ApiError(422, "SCAN_FAILED", "We could not find lab results in this photo. Use good light and keep the whole table in view.") from None
     return {"data": {
         "scan_id": str(uuid.uuid4()),
         "report_type": result.report_type,
@@ -594,8 +600,8 @@ async def scan_food(
     check_scan_quota(user["id"])
     try:
         result = await scan.scan_food(data, authorize=partial(ai_privacy.require_consent, db))
-    except scan.ScanError as e:
-        raise ApiError(422, "SCAN_FAILED", str(e)) from None
+    except scan.ScanError:
+        raise ApiError(422, "SCAN_FAILED", "We could not find food in this photo. Try again with the whole plate in view.") from None
     return {"data": {
         "scan_id": str(uuid.uuid4()),
         "description": result.description,
@@ -696,6 +702,9 @@ async def _audit_sos(db: UserDB, user_id: str, count: int, status: str) -> None:
         })
     except DBError:
         pass
+    except Exception:
+        # This task runs after the response. Never propagate its exception to ASGI logging.
+        error_log.error("SOS audit could not be recorded")
 
 
 @app.get("/api/v1/emergency/{attempt_id}/status")

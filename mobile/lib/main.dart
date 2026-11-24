@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -7,19 +9,25 @@ import 'config.dart';
 import 'data/app_prefs.dart';
 import 'screens/demo_home.dart';
 import 'services/emergency_service.dart';
+import 'services/privacy_diagnostics.dart';
 import 'services/reminder_service.dart';
 import 'theme/nova_settings.dart';
 import 'theme/nova_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  installPrivacyDiagnostics(PlatformDispatcher.instance);
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   const config = AppConfig.current;
   if (!config.isDemo) await AppPrefs.instance.load();
-  runApp(await prepareNovaApp(
+  final app = await prepareNovaApp(
     config,
     initializeSupabase: (settings) async {
-      await Supabase.initialize(url: settings.supabaseUrl, publishableKey: settings.supabaseKey);
+      await Supabase.initialize(
+        url: settings.supabaseUrl,
+        publishableKey: settings.supabaseKey,
+        debug: false,
+      );
       EmergencyService.instance.attach();
     },
     initializeReminders: () async {
@@ -27,7 +35,11 @@ Future<void> main() async {
       await ReminderService.instance.init();
       if (config.canConnect) ReminderService.instance.attach();
     },
-  ));
+  );
+  if (config.canConnect) {
+    AppPrefs.instance.selectAccount(Supabase.instance.client.auth.currentUser?.id);
+  }
+  runApp(app);
 }
 
 Future<NovaApp> prepareNovaApp(
@@ -56,6 +68,25 @@ class NovaApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!demoMode && home is AuthGate && AppConfig.current.canConnect) {
+      final auth = Supabase.instance.client.auth;
+      return AccountNavigation(
+        initialOwner: auth.currentUser?.id,
+        owners: auth.onAuthStateChange.map((event) {
+          final owner = event.session?.user.id;
+          AppPrefs.instance.selectAccount(auth.currentUser?.id);
+          return owner;
+        }),
+        builder: (navigator) {
+          ReminderService.instance.navigatorKey = navigator;
+          return _app(navigator);
+        },
+      );
+    }
+    return _app();
+  }
+
+  Widget _app([GlobalKey<NavigatorState>? navigator]) {
     // Appearance (System / Light / Dark) and Reduce Transparency come from
     // Profile → Appearance and are stored on the device.
     final prefs = AppPrefs.instance;
@@ -64,12 +95,13 @@ class NovaApp extends StatelessWidget {
       builder: (context, _) => NovaSettings(
         reduceTransparency: prefs.reduceTransparency,
         child: MaterialApp(
+          key: ObjectKey(navigator),
           title: 'NOVA Health',
           debugShowCheckedModeBanner: false,
           theme: NovaTheme.light(),
           darkTheme: NovaTheme.dark(),
           themeMode: prefs.themeMode,
-          navigatorKey: demoMode ? null : appNavigatorKey,
+          navigatorKey: navigator,
           home: home,
         ),
       ),
