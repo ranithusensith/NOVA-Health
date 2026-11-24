@@ -10,6 +10,7 @@ Design rules
 import re
 from datetime import date
 import json
+from math import isfinite
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -35,10 +36,7 @@ def detect_image_mime(data: bytes) -> str | None:
 
 
 def _clamp_confidence(v):
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return 0.0
+    x = _to_float(v)
     if 1 < x <= 100:  # model answered as a percentage
         x = x / 100
     return max(0.0, min(1.0, x))
@@ -46,12 +44,33 @@ def _clamp_confidence(v):
 
 def _to_float(v, default=0.0):
     try:
-        return float(v)
-    except (TypeError, ValueError):
+        value = float(v)
+    except (TypeError, ValueError, OverflowError):
         return default
+    return value if isfinite(value) else default
+
+
+def _check_scan_shape(raw, flag: str, *, rows: tuple[str, str] | None = None) -> None:
+    if not isinstance(raw, dict) or type(raw.get(flag)) is not bool:
+        raise llm.InvalidLLMResponse()
+    if not raw[flag]:
+        return
+    if rows is None:
+        if not isinstance(raw.get("description"), str):
+            raise llm.InvalidLLMResponse()
+    else:
+        collection, name = rows
+        items = raw.get(collection)
+        if not isinstance(items, list) or (items and not any(
+            isinstance(row, dict) and isinstance(row.get(name), str) and row[name].strip() for row in items
+        )):
+            raise llm.InvalidLLMResponse()
 
 
 # ---------------------------------------------------------------- schemas
+_MEDICATION_TEXT_FIELDS = ("name", "dosage", "frequency", "instructions", "duration_text")
+
+
 class Medication(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     dosage: str | None = Field(default=None, max_length=60)
@@ -60,17 +79,16 @@ class Medication(BaseModel):
     instructions: str | None = Field(default=None, max_length=500)
     duration_text: str | None = Field(default=None, max_length=80)
 
-    @field_validator("name", "dosage", "frequency", "instructions", "duration_text", mode="before")
+    @field_validator(*_MEDICATION_TEXT_FIELDS, mode="before")
     @classmethod
     def _strip(cls, v):
-        if v is None:
-            return None
-        v = str(v).strip()
-        return v or None
+        return (v.strip() or None) if isinstance(v, str) else None
 
     @field_validator("duration_days", mode="before")
     @classmethod
     def _days(cls, v):
+        if type(v) not in (int, str):
+            return None
         match = re.fullmatch(r"([0-9]{1,3})(?:\s+days?)?", str(v).strip(), re.IGNORECASE)
         if not match:
             return None
@@ -144,21 +162,25 @@ Set is_food to false if the image does not show food or drink."""
 
 
 # ---------------------------------------------------------------- parsing
-def parse_prescription(raw: dict) -> PrescriptionResult:
+def parse_prescription(raw: dict, identifiers=()) -> PrescriptionResult:
     meds: list[Medication] = []
-    for item in raw.get("medications") or []:
+    items = raw.get("medications")
+    for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue
+        fields = {key: safety.redact(value, identifiers) for key in _MEDICATION_TEXT_FIELDS
+                  if isinstance(value := item.get(key), str)}
+        fields["duration_days"] = item.get("duration_days")
         try:
-            meds.append(Medication.model_validate(item))
+            meds.append(Medication.model_validate(fields))
         except ValidationError:
             continue  # drop one bad row, keep the rest
     notes = raw.get("notes")
     return PrescriptionResult(
-        is_prescription=bool(raw.get("is_prescription")),
+        is_prescription=raw.get("is_prescription") is True,
         medications=meds[:10],
         confidence=_clamp_confidence(raw.get("confidence")),
-        notes=str(notes)[:300] if notes else None,
+        notes=safety.redact(notes, identifiers)[:300] if isinstance(notes, str) else None,
     )
 
 
@@ -166,9 +188,10 @@ def parse_food(raw: dict) -> FoodResult:
     def bounded(v, hi):
         return max(0.0, min(hi, _to_float(v)))
 
+    description = raw.get("description")
     return FoodResult(
-        is_food=bool(raw.get("is_food")),
-        description=str(raw.get("description") or "").strip()[:160],
+        is_food=raw.get("is_food") is True,
+        description=safety.redact(description).strip()[:160] if isinstance(description, str) else "",
         calories=int(bounded(raw.get("calories"), 5000)),
         protein_g=round(bounded(raw.get("protein_g"), 500), 1),
         carbs_g=round(bounded(raw.get("carbs_g"), 800), 1),
@@ -324,26 +347,13 @@ def parse_report(raw: dict, reviewed_source: str, identifiers=(), *, today: date
 
 
 # ---------------------------------------------------------------- public API
-def _redact_output(value, identifiers, *, clinical_range_field=False):
-    if isinstance(value, str):
-        return safety.redact(value, identifiers, clinical_ranges=clinical_range_field)
-    if isinstance(value, list):
-        return [_redact_output(item, identifiers) for item in value]
-    if isinstance(value, dict):
-        return {
-            key: _redact_output(item, identifiers, clinical_range_field=key == "reference_range")
-            for key, item in value.items()
-        }
-    return value
-
-
 async def scan_prescription(text: str, *, authorize, identifiers=()) -> PrescriptionResult:
     raw = await llm.generate_json(
         PRESCRIPTION_PROMPT + "\nClinical text (JSON string):\n" + json.dumps(text, ensure_ascii=False),
         authorize=authorize, system=PRESCRIPTION_SYSTEM,
     )
-    raw = _redact_output(raw, identifiers)
-    result = parse_prescription(raw)
+    _check_scan_shape(raw, "is_prescription", rows=("medications", "name"))
+    result = parse_prescription(raw, identifiers)
     if not result.is_prescription or not result.medications:
         raise ScanError("We could not find a prescription in this photo. Try again with better light.")
     return result
@@ -351,7 +361,7 @@ async def scan_prescription(text: str, *, authorize, identifiers=()) -> Prescrip
 
 async def scan_food(image: bytes, *, authorize) -> FoodResult:
     raw = await llm.generate_json(FOOD_PROMPT, food_image=image, authorize=authorize, system=FOOD_SYSTEM)
-    raw = _redact_output(raw, ())
+    _check_scan_shape(raw, "is_food")
     result = parse_food(raw)
     if not result.is_food or not result.description:
         raise ScanError("We could not find food in this photo. Try again with the whole plate in view.")
@@ -363,6 +373,7 @@ async def scan_report(text: str, *, authorize, identifiers=(), today: date | Non
         REPORT_PROMPT + "\nClinical text (JSON string):\n" + json.dumps(text, ensure_ascii=False),
         authorize=authorize, system=REPORT_SYSTEM,
     )
+    _check_scan_shape(raw, "is_report", rows=("results", "test"))
     result = parse_report(raw, text, identifiers, today=today)
     if not result.is_report or not result.results:
         raise ScanError("We could not find lab results in this photo. Use good light and keep the whole table in view.")

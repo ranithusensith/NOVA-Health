@@ -41,9 +41,12 @@
 | 401 | Not logged in or token expired |
 | 403 | Not allowed to access this record |
 | 404 | Not found |
+| 405 | Request method is not supported for this route |
 | 422 | Validation error |
 | 429 | Too many requests |
 | 500 | Server error |
+| 502 | An upstream response was unreadable or the upstream service rejected an operation |
+| 503 | A dependency is unavailable, misconfigured, or timed out |
 
 ## 4. Response Formats
 
@@ -80,13 +83,25 @@ Query: `?page=1&limit=20`
 | Code | Used for |
 |---|---|
 | `INVALID_INPUT` | Failed validation |
-| `UNAUTHORIZED` | Missing or bad token |
+| `UNAUTHORIZED` | Missing, invalid, or expired session token (401 with `WWW-Authenticate: Bearer`) |
 | `FORBIDDEN` | Accessing another user's data |
 | `NOT_FOUND` | Record does not exist |
-| `SCAN_FAILED` | OCR or image analysis failed |
-| `AI_UNAVAILABLE` | AI engine or external model down |
+| `METHOD_NOT_ALLOWED` | Unsupported HTTP method (405 with `Allow`) |
+| `AUTH_UNAVAILABLE` | Session verification service is unavailable (503) |
+| `AUTH_RESPONSE_INVALID` | Session verification returned an unreadable account response (502) |
+| `SCAN_FAILED` | A usable document or meal could not be found in a valid scan response (422) |
+| `OCR_UNAVAILABLE` | Local text extraction is unavailable (503) |
+| `AI_UNAVAILABLE` | Model dependency outage or timeout (503) |
+| `AI_PROVIDER_AUTH_FAILED` | The provider rejected NOVA's credentials or authorization (503) |
+| `AI_REQUEST_REJECTED` | The provider rejected NOVA's request (502) |
+| `AI_RESPONSE_INVALID` | The provider returned an unusable response (502) |
+| `DATABASE_UNAVAILABLE` | Database dependency outage or timeout (503) |
+| `DATABASE_RESPONSE_INVALID` | Unreadable database response (502) |
+| `DATABASE_REQUEST_FAILED` | The database rejected an operation (502) |
 | `RATE_LIMITED` | Too many requests |
-| `SERVER_ERROR` | Unexpected failure |
+| `SERVER_ERROR` | Unexpected failure inside NOVA (500) |
+
+The error envelope contains a fixed code and a patient-safe message. Upstream response bodies and user-supplied field names are omitted. Error responses use `Cache-Control: no-store`. Consent and save endpoints retain their operation-specific errors. If the outcome of a write is unverified, check the relevant records before retrying it.
 
 ## 5. Endpoints (Draft)
 

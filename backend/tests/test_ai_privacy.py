@@ -335,8 +335,12 @@ def test_invalid_or_oversized_pixel_payload_does_not_go_to_google(harness):
     assert not requests
 
 
-@pytest.mark.parametrize("failure", ["rejected", "bad_json", "network"])
-def test_provider_errors_and_logs_contain_no_sensitive_payload(harness, caplog, failure):
+@pytest.mark.parametrize("failure,status,code", [
+    ("rejected", 502, "AI_REQUEST_REJECTED"),
+    ("bad_json", 502, "AI_RESPONSE_INVALID"),
+    ("network", 503, "AI_UNAVAILABLE"),
+])
+def test_provider_errors_and_logs_contain_no_sensitive_payload(harness, caplog, failure, status, code):
     client, _, _, replies = harness
     caplog.set_level(logging.WARNING)
     if failure == "rejected":
@@ -348,7 +352,7 @@ def test_provider_errors_and_logs_contain_no_sensitive_payload(harness, caplog, 
     else:
         replies.append(httpx.ReadTimeout(BODY_MARKER))
     res = chat(client, message=f"I am {NAME}, {EMAIL}")
-    assert res.status_code == 502
+    assert res.status_code == status and res.json()["error"]["code"] == code
     assert all(secret not in res.text + caplog.text for secret in (BODY_MARKER, NAME, EMAIL))
     assert "LLM" in caplog.text
 
@@ -393,6 +397,5 @@ def test_unexpected_provider_result_does_not_surface_a_sensitive_trace(harness, 
     client, _, _, replies = harness
     replies.append({"is_prescription": True, "medications": 1, "notes": BODY_MARKER})
     response = client.post("/api/v1/scan/prescription", json={"text": "Paracetamol", "reviewed": True})
-    assert response.status_code == 500
+    assert response.status_code == 502 and response.json()["error"]["code"] == "AI_RESPONSE_INVALID"
     assert BODY_MARKER not in response.text + caplog.text
-    assert "Private AI route failed unexpectedly" in caplog.text

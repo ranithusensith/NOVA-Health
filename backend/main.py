@@ -23,11 +23,12 @@ from typing import Annotated, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, Field, StrictBool, StringConstraints, model_validator
+from starlette.exceptions import HTTPException
 
 load_dotenv()
 
@@ -41,13 +42,14 @@ import rules  # noqa: E402
 import safety  # noqa: E402
 import scan  # noqa: E402
 import tools  # noqa: E402
-from db import DBError, UserDB  # noqa: E402
+from db import DBError, InvalidDBResponse, UserDB  # noqa: E402
+from upstream import decode_json  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 # httpx INFO logs include PostgREST URLs with account IDs and health filters.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-privacy_log = logging.getLogger("nova.privacy")
+error_log = logging.getLogger("nova.api")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_PUBLISHABLE_KEY = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
@@ -58,14 +60,6 @@ CHAT_DAILY_LIMIT = int(os.environ.get("CHAT_DAILY_LIMIT", "100"))
 
 app = FastAPI(title="NOVA Health API", version="0.3.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 # ---------------------------------------------------------------
 # Errors (match the API contract)
 # ---------------------------------------------------------------
@@ -75,8 +69,12 @@ class ApiError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def _error_response(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}})
+def _error_response(status: int, code: str, message: str, *, headers=None) -> JSONResponse:
+    response_headers = {**(headers or {}), "Cache-Control": "no-store"}
+    if status == 401:
+        response_headers["WWW-Authenticate"] = "Bearer"
+    return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}},
+                        headers=response_headers)
 
 
 @app.exception_handler(ApiError)
@@ -90,37 +88,73 @@ async def privacy_error_handler(_: Request, exc: ai_privacy.PrivacyError):
 
 
 @app.middleware("http")
-async def private_ai_responses(request: Request, call_next):
-    path = request.url.path
-    private = path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/"))
-    if not private or path == "/api/v1/scan/prescription/confirm":
-        return await call_next(request)
+async def safe_api_responses(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception:
-        privacy_log.error("Private AI route failed unexpectedly")
-        response = _error_response(500, "SERVER_ERROR", "Could not process this request.")
-    response.headers["Cache-Control"] = "no-store"
+        # Exception messages, tracebacks, request URLs and bodies may include patient data.
+        error_log.error("API request failed unexpectedly")
+        return _error_response(500, "SERVER_ERROR", "Could not process this request.")
+    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/")):
+        response.headers["Cache-Control"] = "no-store"
     return response
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(HTTPException)
 async def http_error_handler(_: Request, exc: HTTPException):
-    code = {400: "INVALID_INPUT", 401: "UNAUTHORIZED", 403: "FORBIDDEN",
-            404: "NOT_FOUND", 422: "INVALID_INPUT", 429: "RATE_LIMITED"}.get(exc.status_code, "SERVER_ERROR")
-    return _error_response(exc.status_code, code, str(exc.detail))
+    code, message = {
+        400: ("INVALID_INPUT", "Invalid request."),
+        401: ("UNAUTHORIZED", "Sign in again."),
+        403: ("FORBIDDEN", "Access is not allowed."),
+        404: ("NOT_FOUND", "The requested resource was not found."),
+        405: ("METHOD_NOT_ALLOWED", "This request method is not supported."),
+        422: ("INVALID_INPUT", "Invalid input."),
+        429: ("RATE_LIMITED", "Too many requests. Try again later."),
+    }.get(exc.status_code, ("SERVER_ERROR", "Could not process this request.") if exc.status_code >= 500
+          else ("INVALID_INPUT", "Invalid request."))
+    headers = {key: value for key, value in (exc.headers or {}).items() if key.lower() in ("allow", "retry-after")}
+    return _error_response(exc.status_code, code, message, headers=headers)
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(_: Request, exc: RequestValidationError):
-    first = exc.errors()[0] if exc.errors() else {}
-    field = ".".join(str(x) for x in first.get("loc", []) if x != "body")
-    return _error_response(422, "INVALID_INPUT", f"Invalid input{': ' + field if field else ''}.")
+    return _error_response(422, "INVALID_INPUT", "Invalid input.")
 
 
-def llm_to_api_error(e: llm.LLMError) -> ApiError:
-    code = "RATE_LIMITED" if e.status == 429 else "AI_UNAVAILABLE"
-    return ApiError(e.status if e.status in (429, 503) else 502, code, e.message)
+@app.exception_handler(llm.LLMError)
+async def llm_error_handler(_: Request, exc: llm.LLMError):
+    if exc.status == 429:
+        return _error_response(429, "RATE_LIMITED", "The AI service is busy. Try again in a minute.")
+    specific = {
+        "AI_RESPONSE_INVALID": (502, "The AI returned an unreadable answer. Try again."),
+        "AI_REQUEST_REJECTED": (502, "The AI service could not process this request. Try again later."),
+        "AI_PROVIDER_AUTH_FAILED": (503, "The AI service is unavailable. Try again later."),
+    }
+    if exc.code in specific:
+        status, message = specific[exc.code]
+        return _error_response(status, exc.code, message)
+    return _error_response(503, "AI_UNAVAILABLE", "The AI service is unavailable. Try again later.")
+
+
+@app.exception_handler(DBError)
+async def database_error_handler(_: Request, exc: DBError):
+    if isinstance(exc, InvalidDBResponse):
+        return _error_response(502, "DATABASE_RESPONSE_INVALID", "The database returned an unreadable response.")
+    if exc.status == 401:
+        return _error_response(401, "UNAUTHORIZED", "Sign in again.")
+    if exc.status == 403:
+        return _error_response(403, "FORBIDDEN", "Access is not allowed.")
+    if exc.status == 502:
+        return _error_response(502, "DATABASE_REQUEST_FAILED", "The database could not process this request.")
+    return _error_response(503, "DATABASE_UNAVAILABLE", "The database is unavailable. Try again later.")
 
 
 # ---------------------------------------------------------------
@@ -128,25 +162,32 @@ def llm_to_api_error(e: llm.LLMError) -> ApiError:
 # ---------------------------------------------------------------
 async def current_user(authorization: str | None = Header(default=None)) -> dict:
     scheme, _, token = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not token or any(c.isspace() for c in token):
-        raise HTTPException(401, "Missing bearer token")
+    if scheme.lower() != "bearer" or not token or any(not "!" <= char <= "~" for char in token):
+        raise ApiError(401, "UNAUTHORIZED", "Sign in again.")
+    if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY:
+        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session. Try again later.")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.get(
                 f"{SUPABASE_URL}/auth/v1/user",
                 headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_PUBLISHABLE_KEY},
             )
-    except httpx.HTTPError:
-        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session.") from None
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError):
+        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session. Try again later.") from None
     if res.status_code in (400, 401, 403):
-        raise HTTPException(401, "Invalid or expired token")
+        raise ApiError(401, "UNAUTHORIZED", "Invalid or expired session. Sign in again.")
     if res.status_code != 200:
-        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session.")
+        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session. Try again later.")
     try:
-        user = res.json()
+        user = decode_json(res.content)
+        if not isinstance(user, dict) or not isinstance(user.get("id"), str):
+            raise ValueError("Invalid account")
         user["id"] = str(uuid.UUID(user["id"]))
-    except (ValueError, TypeError, KeyError, AttributeError):
-        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session.") from None
+        for field, expected in (("email", str), ("phone", str), ("user_metadata", dict)):
+            if user.get(field) is not None and not isinstance(user[field], expected):
+                raise ValueError("Invalid account metadata")
+    except ValueError:
+        raise ApiError(502, "AUTH_RESPONSE_INVALID", "Could not verify your session. Try again later.") from None
     return user
 
 
@@ -345,7 +386,10 @@ async def _known_identifiers(user: dict, db: UserDB) -> tuple[str, ...]:
     try:
         profiles = await db.select("profiles", "full_name", filters={"id": f"eq.{db.user_id}"}, limit=1)
         if profiles:
-            names.append(profiles[0].get("full_name"))
+            full_name = profiles[0].get("full_name")
+            if full_name is not None and not isinstance(full_name, str):
+                raise InvalidDBResponse()
+            names.append(full_name)
     except (DBError, ValueError, AttributeError):
         raise ai_privacy.PrivacyError(
             503, "AI_PRIVACY_UNAVAILABLE", "Could not prepare your data for private processing. Try again later.",
@@ -357,9 +401,9 @@ async def _known_identifiers(user: dict, db: UserDB) -> tuple[str, ...]:
 async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB = Depends(get_db)):
     message = body.message.strip()
     if not message:
-        raise HTTPException(400, "message must not be empty")
+        raise ApiError(400, "INVALID_INPUT", "Message must not be empty.")
     if len(message) > agent.MAX_QUESTION_CHARS:
-        raise HTTPException(400, f"message is too long ({agent.MAX_QUESTION_CHARS} characters maximum)")
+        raise ApiError(400, "INVALID_INPUT", f"Message is too long ({agent.MAX_QUESTION_CHARS} characters maximum).")
 
     emergency = safety.detect_emergency(message)
     if emergency:
@@ -372,15 +416,12 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
         if not body.reviewed:
             raise ApiError(400, "REVIEW_REQUIRED", "Review this question before sharing it with Google Gemini.")
         check_chat_quota(user["id"])
-        try:
-            result = await agent.run_agent(
-                message, db, history=[{"role": "user", "content": item} for item in body.recent_questions],
-                health_data=set(body.health_data),
-                identifiers=await _known_identifiers(user, db),
-                authorize=partial(ai_privacy.require_consent, db),
-            )
-        except llm.LLMError as e:
-            raise llm_to_api_error(e) from None
+        result = await agent.run_agent(
+            message, db, history=[{"role": "user", "content": item} for item in body.recent_questions],
+            health_data=set(body.health_data),
+            identifiers=await _known_identifiers(user, db),
+            authorize=partial(ai_privacy.require_consent, db),
+        )
 
     return {"data": {
         "reply": result.reply,
@@ -398,10 +439,9 @@ async def daily_report(
     db: UserDB = Depends(get_db),
 ):
     day = date_ or tools.local_today()
-    try:
-        data = await reports.daily_report(db, day)
-    except DBError as e:
-        raise ApiError(502, "SERVER_ERROR", e.message)
+    if day in (date.min, date.max):
+        raise ApiError(400, "INVALID_INPUT", "Select a date within the supported range.")
+    data = await reports.daily_report(db, day)
     response.headers["Cache-Control"] = "no-store"
     return {"data": data}
 
@@ -438,8 +478,6 @@ async def scan_prescription(
         result = await scan.scan_prescription(text, identifiers=identifiers, authorize=partial(ai_privacy.require_consent, db))
     except scan.ScanError as e:
         raise ApiError(422, "SCAN_FAILED", str(e)) from None
-    except llm.LLMError as e:
-        raise llm_to_api_error(e) from None
     meds = [m.model_dump() for m in result.medications]
     safety_check = await prescription_safety(db, [{**m, "times": []} for m in meds])
     return {"data": {
@@ -506,8 +544,6 @@ async def scan_report(
         )
     except scan.ScanError as e:
         raise ApiError(422, "SCAN_FAILED", str(e)) from None
-    except llm.LLMError as e:
-        raise llm_to_api_error(e) from None
     return {"data": {
         "scan_id": str(uuid.uuid4()),
         "report_type": result.report_type,
@@ -560,8 +596,6 @@ async def scan_food(
         result = await scan.scan_food(data, authorize=partial(ai_privacy.require_consent, db))
     except scan.ScanError as e:
         raise ApiError(422, "SCAN_FAILED", str(e)) from None
-    except llm.LLMError as e:
-        raise llm_to_api_error(e) from None
     return {"data": {
         "scan_id": str(uuid.uuid4()),
         "description": result.description,

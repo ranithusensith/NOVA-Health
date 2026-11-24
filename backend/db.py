@@ -10,13 +10,30 @@ from datetime import datetime, timezone
 import os
 
 import httpx
+from upstream import decode_json
 
 
 class DBError(Exception):
-    def __init__(self, message: str, status: int = 502):
+    def __init__(self, message: str, status: int = 503):
         super().__init__(message)
         self.message = message
         self.status = status
+
+
+class InvalidDBResponse(DBError):
+    def __init__(self):
+        super().__init__("The database returned an unreadable response.", status=502)
+
+
+def _check_status(response: httpx.Response) -> None:
+    status = response.status_code
+    if 200 <= status < 300:
+        return
+    if status in (401, 403):
+        raise DBError("Database access was denied.", status=status)
+    if status in (408, 429) or status >= 500:
+        raise DBError("The database is unavailable.")
+    raise DBError("The database rejected the request.", status=502)
 
 
 class UserDB:
@@ -56,13 +73,15 @@ class UserDB:
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 res = await client.get(f"{self._base}/{table}", params=params, headers=self._headers())
-        except httpx.HTTPError as e:
-            raise DBError("Could not reach the database.") from e
-        if res.status_code >= 400:
-            raise DBError(f"Database error ({res.status_code}).")
-        data = res.json()
-        if not isinstance(data, list):
-            raise DBError("Unexpected database response.")
+        except (httpx.HTTPError, httpx.InvalidURL):
+            raise DBError("Could not reach the database.") from None
+        _check_status(res)
+        try:
+            data = decode_json(res.content)
+        except ValueError:
+            raise InvalidDBResponse() from None
+        if not isinstance(data, list) or not all(isinstance(row, dict) for row in data):
+            raise InvalidDBResponse()
         return data
 
     async def insert(self, table: str, rows: dict | list[dict]) -> None:
@@ -72,10 +91,9 @@ class UserDB:
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 res = await client.post(f"{self._base}/{table}", json=rows, headers=headers)
-        except httpx.HTTPError as e:
-            raise DBError("Could not reach the database.") from e
-        if res.status_code >= 400:
-            raise DBError(f"Database error ({res.status_code}).")
+        except (httpx.HTTPError, httpx.InvalidURL):
+            raise DBError("Could not reach the database.") from None
+        _check_status(res)
 
     async def set_ai_consent(self, disclosure_version: str | None) -> None:
         headers = {**self._headers(), "Prefer": "return=minimal,resolution=merge-duplicates"}
@@ -92,10 +110,9 @@ class UserDB:
                             "consented_at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.InvalidURL):
             raise DBError("Could not update AI consent.") from None
-        if not 200 <= res.status_code < 300:
-            raise DBError("Could not update AI consent.")
+        _check_status(res)
 
     async def delete_legacy_ai_chats(self) -> int:
         try:
@@ -103,11 +120,12 @@ class UserDB:
                 res = await client.post(
                     f"{self._base}/rpc/delete_legacy_ai_chats", json={}, headers=self._headers(),
                 )
-            if not 200 <= res.status_code < 300:
-                raise DBError("Could not delete older chats.")
-            count = res.json()
+            _check_status(res)
+            count = decode_json(res.content)
             if type(count) is not int or count < 0:
-                raise DBError("Could not verify chat deletion.")
+                raise InvalidDBResponse()
             return count
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, httpx.InvalidURL):
             raise DBError("Could not verify chat deletion.") from None
+        except ValueError:
+            raise InvalidDBResponse() from None

@@ -3,13 +3,28 @@ Daily health report computed and written entirely within NOVA.
 """
 
 from datetime import date, timedelta
+from math import isfinite
 
 import safety
 import tools
-from db import DBError
+from db import DBError, InvalidDBResponse
 
 WATER_GOAL_ML = 2500
 SLEEP_GOAL_H = 7.0
+
+
+def _logged_number(value, convert):
+    if value is None:
+        return 0
+    try:
+        if type(value) not in (int, float, str):
+            raise ValueError("Invalid log value")
+        number = convert(value)
+        if not isfinite(number):
+            raise ValueError("Invalid log value")
+        return number
+    except (ValueError, OverflowError):
+        raise InvalidDBResponse() from None
 
 
 async def _day_rows(db, table: str, cols: str, ts: str, day: date, extra: dict | None = None) -> list[dict]:
@@ -68,15 +83,18 @@ async def build_daily_data(db, day: date) -> dict:
         warnings = [safety.SAFETY_UNAVAILABLE]
 
     scheduled = sum(tools.scheduled_doses_on(m, day) for m in meds)
+    moods = [row.get("mood") for row in mood]
+    if any(value is not None and not isinstance(value, str) for value in moods):
+        raise InvalidDBResponse()
     return {
         "date": day.isoformat(),
-        "water_ml": sum(int(r.get("amount_ml") or 0) for r in water),
+        "water_ml": sum(_logged_number(r.get("amount_ml"), int) for r in water),
         "water_goal_ml": WATER_GOAL_ML,
-        "sleep_hours": round(sum(float(r.get("hours") or 0) for r in sleep), 1) if sleep else None,
+        "sleep_hours": round(sum(_logged_number(r.get("hours"), float) for r in sleep), 1) if sleep else None,
         "sleep_goal_hours": SLEEP_GOAL_H,
-        "moods": [r.get("mood") for r in mood],
+        "moods": moods,
         "meals": len(meals),
-        "calories": sum(int(r.get("calories") or 0) for r in meals),
+        "calories": sum(_logged_number(r.get("calories"), int) for r in meals),
         "heart": tools.summarize_heart(heart),
         "doses_scheduled": scheduled,
         "doses_taken": taken,
