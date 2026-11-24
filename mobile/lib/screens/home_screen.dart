@@ -16,6 +16,8 @@ import '../widgets/states.dart';
 import 'daily_report_screen.dart';
 import 'emergency_screen.dart';
 import 'medications_screen.dart';
+import 'weather_card.dart';
+import '../data/weather.dart';
 
 /// 02 Home — hero screen: insight, rings, next dose, weather tip and mood check.
 class HomeScreen extends StatelessWidget {
@@ -27,9 +29,11 @@ class HomeScreen extends StatelessWidget {
     this.onRetry,
     this.onOpenTrack,
     this.onToggleEmpty,
+    this.weather,
   });
 
   final HealthSnapshot data;
+  final WeatherSession? weather;
 
   /// First load in progress: show skeletons instead of empty cards.
   final bool loading;
@@ -99,12 +103,14 @@ class HomeScreen extends StatelessWidget {
                     _DoseStatusCard(data: data)
                   else
                     const _NoMedsCard(),
-                  const SizedBox(height: NovaSpace.gap),
-                  _WeatherCard(data: data),
                   if (!data.isEmpty) ...[
                     const SizedBox(height: NovaSpace.gap),
                     const _MoodCard(),
                   ],
+                ],
+                if (weather != null) ...[
+                  const SizedBox(height: NovaSpace.gap),
+                  WeatherCard(session: weather!),
                 ],
               ],
             ),
@@ -501,36 +507,6 @@ class _NoMedsCard extends StatelessWidget {
             Icon(CupertinoIcons.chevron_right, size: 20, color: c.textSecondary),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _WeatherCard extends StatelessWidget {
-  const _WeatherCard({required this.data});
-  final HealthSnapshot data;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.nova;
-    return NovaCard(
-      child: Row(
-        children: [
-          IconBadge(icon: CupertinoIcons.sun_max, background: c.warningSurface, foreground: c.warningContent),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Weather tip', style: NovaType.headline.copyWith(color: c.textPrimary)),
-                Text(
-                  'On hot or humid days, drink a little more water and keep walks to the cooler hours. Local weather comes in a later version.',
-                  style: NovaType.footnote.copyWith(color: c.textSecondary),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }

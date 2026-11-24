@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config.dart';
 import '../data/scan_models.dart';
 import '../data/symptom_repository.dart';
+import '../data/weather.dart';
 import '../data/care_models.dart';
 import '../data/daily_metrics.dart';
 
@@ -19,6 +20,8 @@ class ApiException implements Exception {
     final code = error is Map ? error['code'] : null;
     final message = switch (code) {
       'UNAUTHORIZED' => 'Sign in again.',
+      'INVALID_CITY' => 'Enter a city name or choose a city from the search results.',
+      'WEATHER_UNAVAILABLE' => 'City search is unavailable. Try again later.',
       'FORBIDDEN' => 'Your account cannot perform this action.',
       'AUTH_UNAVAILABLE' || 'AUTH_RESPONSE_INVALID' =>
         'Could not verify your session. Try again later.',
@@ -263,7 +266,7 @@ class ApiClient {
   }
 
   /// Sends a reviewed message and returns NOVA's reply and its source labels.
-  Future<AssistantReply> chat(String message, {List<String> healthData = const [], List<String> recentQuestions = const []}) async {
+  Future<AssistantReply> chat(String message, {List<String> healthData = const [], List<String> recentQuestions = const [], int? weatherCityId}) async {
     final data = await _postJson('/api/v1/assistant/chat', {
       'message': message,
       'reviewed': true,
@@ -271,8 +274,20 @@ class ApiClient {
       if (healthData.any((kind) => kind == 'logs' || kind == 'heart_rate'))
         'local_calendar': deviceCalendar(DateTime.now()),
       'recent_questions': recentQuestions,
+      if (weatherCityId != null) 'weather': {'city_id': weatherCityId, 'consent': true},
     });
     return AssistantReply.fromJson(data);
+  }
+
+  Future<List<WeatherCity>> searchWeatherCities(String city) async {
+    final query = Uri(queryParameters: {'query': city}).query;
+    final data = await _getJson('/api/v1/weather/cities?$query', timeout: const Duration(seconds: 8));
+    return (data['cities'] as List).cast<Map<String, dynamic>>().map(WeatherCity.fromJson).toList();
+  }
+
+  Future<WeatherSnapshot> loadWeather(int cityId) async {
+    final data = await _getJson('/api/v1/weather/current?city_id=$cityId', timeout: const Duration(seconds: 12));
+    return WeatherSnapshot.fromJson(data);
   }
 
   Future<Map<String, dynamic>> _getJson(
@@ -312,6 +327,7 @@ class AssistantReply {
   final bool emergency;
 
   static const _sourceLabels = {
+    'weather': 'Open-Meteo weather',
     'water': 'Water logs',
     'sleep': 'Sleep logs',
     'mood': 'Mood logs',

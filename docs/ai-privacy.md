@@ -11,6 +11,8 @@ NOVA uses Google Gemini to select assistant tools and create scan drafts when th
 
 When tracking logs are selected, the assistant provider can receive a bounded symptom count and recorded severity/status values. NOVA displays the account's documented symptom labels and local onset dates from its own evidence. Stored symptom names, notes and onset dates stay out of the tool payload to Gemini. Text the user types directly into a reviewed chat question follows the normal chat disclosure.
 
+Weather uses an explicitly selected city. NOVA sends the entered city search and the selected city's public ID or approximate coordinates to Open-Meteo. The weather provider receives no NOVA account ID, session token or health records. The app keeps the selection in memory for the signed-in session. In a reviewed assistant reply, an unchecked-by-default option allows NOVA to display current weather evidence. That option does not add the city or weather fields to the Gemini request. User-typed text in the question follows the existing chat disclosure.
+
 ## Storage and deployment
 
 - Apply the [ordered Supabase migrations](database-setup.md) as an authorized migration owner. Migration `004` creates the account-scoped table for the disclosure version and consent timestamp. Users begin opted out when the table is first created. Deploy the matching mobile and API versions. Clients using the previous scan or assistant request format must update.

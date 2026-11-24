@@ -4,3 +4,4 @@ httpx
 python-dotenv
 python-multipart
 Pillow>=12.2,<13
+tzdata

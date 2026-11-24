@@ -41,7 +41,7 @@ class _ChatApi implements ApiClient {
   @override
   Future<AssistantReply> chat(String message,
       {List<String> healthData = const [],
-      List<String> recentQuestions = const []}) async {
+      List<String> recentQuestions = const [], int? weatherCityId}) async {
     history.add(recentQuestions);
     return pending == null ? reply : pending!.future;
   }

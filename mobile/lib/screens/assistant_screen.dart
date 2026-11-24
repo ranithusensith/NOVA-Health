@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
+import '../data/weather.dart';
 import '../services/api_client.dart';
 import '../services/emergency_service.dart';
 import '../theme/nova_theme.dart';
@@ -10,6 +11,7 @@ import '../widgets/glass.dart';
 import '../widgets/pressable.dart';
 import 'ai_privacy_screen.dart';
 import 'emergency_screen.dart';
+import 'weather_card.dart';
 
 enum ChatKind { user, ai, error, typing }
 
@@ -31,9 +33,10 @@ class ChatItem {
 /// glass input bar. Replies come from POST /api/v1/assistant/chat
 /// using ApiClient.chat.
 class AssistantScreen extends StatefulWidget {
-  const AssistantScreen({super.key, this.api, this.callNumber});
+  const AssistantScreen({super.key, this.api, this.callNumber, this.weather});
 
   final ApiClient? api;
+  final WeatherSession? weather;
   final Future<bool> Function(String)? callNumber;
 
   @override
@@ -103,7 +106,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       if (!await ensureAiConsent(context, client: api) || !mounted || !current()) return;
       final sharing = await showDialog<AiChatShare>(
         context: context,
-        builder: (_) => const AiChatReview(),
+        builder: (_) => AiChatReview(weatherCity: widget.weather?.city),
       );
       if (sharing == null || !current()) return;
       final previous = _items.where((item) => item.kind == ChatKind.user).toList();
@@ -116,7 +119,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
         _items = [..._items, ChatItem.user(text), ChatItem.typing];
       });
       _scrollToEnd();
-      final response = await api.chat(text, healthData: sharing.healthData, recentQuestions: recent);
+      final response = await api.chat(text, healthData: sharing.healthData, recentQuestions: recent, weatherCityId: sharing.weatherCityId);
       final replyText = response.text.trim();
       if (response.emergency) {
         reply = ChatItem.ai(replyText.isEmpty ? _preflightUnavailable : replyText,
@@ -353,6 +356,7 @@ class _Bubble extends StatelessWidget {
             Text('Sources: ${item.sources.join(', ')}',
                 style: NovaType.caption.copyWith(color: c.textSecondary)),
           ],
+          if (item.sources.contains('Open-Meteo weather')) const WeatherCredit(),
           if (item.callForHelp) ...[
             const SizedBox(height: 8),
             FilledButton(onPressed: onCall, child: const Text('Call 1990 (Sri Lanka)')),

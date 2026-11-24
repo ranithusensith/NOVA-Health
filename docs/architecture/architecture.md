@@ -109,7 +109,7 @@ re-encoded photo. See [External AI privacy](../ai-privacy.md).
 | AI | LLMs, agentic architecture, knowledge-based reasoning |
 | Vision | OCR and multimodal vision models |
 | Wearables | Apple HealthKit, Samsung Health |
-| Weather | Weather API (final provider TBD) |
+| Weather | Open-Meteo city geocoding and forecast APIs |
 | Notifications | Push (FCM) and local notifications |
 | Tools | VS Code, Android Studio, Git/GitHub |
 
@@ -117,7 +117,7 @@ re-encoded photo. See [External AI privacy](../ai-privacy.md).
 
 1. PostgreSQL or Firebase? (owner: database design)
 2. Which LLM and vision provider? (owner: AI research)
-3. Which weather API? (owner: integrations research)
+3. Review and approve weather-related health alert rules before adding notifications.
 4. Is Samsung Health API access available for a student project? (owner: integrations research)
 
 ## 9. Related Documents
