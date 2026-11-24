@@ -1,6 +1,6 @@
 """Synthetic clinical cases covering deterministic safety controls."""
 import asyncio
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -120,6 +120,7 @@ def test_report_safety_failures_and_unsafe_saved_text_are_visible_safely():
 def test_active_current_red_flag_log_short_circuits_assistant_and_leads_report(monkeypatch):
     day = date(2026, 11, 1)
     monkeypatch.setattr(tools, "local_today", lambda: day)
+    monkeypatch.setattr(tools, "utc_now", lambda: datetime(2026, 11, 1, 10, tzinfo=timezone.utc))
     db = FakeDB({"symptom_logs": [
         {"name": "හුස්ම ගන්න බැහැ", "status": "active", "started_at": "2026-11-01T08:00:00Z"},
     ]})

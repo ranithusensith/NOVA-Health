@@ -63,10 +63,7 @@ async def _day_doses(db, day: date) -> tuple[int, int]:
 
 
 async def build_daily_data(db, day: date) -> dict:
-    symptoms = []
-    if day == tools.local_today():
-        symptoms = await _day_rows(db, "symptom_logs", "name,status,started_at", "started_at", day,
-                                   {"status": "eq.active"})
+    urgent = await tools.recent_saved_emergency(db) if day == tools.local_today() else None
     water = await _day_rows(db, "water_logs", "amount_ml,logged_at", "logged_at", day)
     sleep = await _day_rows(db, "sleep_logs", "hours,logged_at", "logged_at", day)
     mood = await _day_rows(db, "mood_logs", "mood,logged_at", "logged_at", day)
@@ -101,7 +98,7 @@ async def build_daily_data(db, day: date) -> dict:
         "unassigned_dose_logs": unassigned,
         "lab_results": labs.get("results", []),
         "warnings": warnings,
-        "emergency": safety.logged_emergency(symptoms),
+        "emergency": urgent,
     }
 
 
@@ -164,7 +161,7 @@ async def daily_report(db, day: date) -> dict:
     text = fallback_text(data, items)
     if data["emergency"]:
         kind, symptom = data["emergency"]
-        text = safety.emergency_reply(kind, text=symptom) + "\n\n" + text
+        text = safety.saved_emergency_reply(kind, text=symptom) + "\n\n" + text
     return {
         "date": day.isoformat(),
         "report": safety.finalize(text, data["warnings"]),

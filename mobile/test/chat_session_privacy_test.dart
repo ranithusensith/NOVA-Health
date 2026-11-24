@@ -20,16 +20,25 @@ class _ChatApi implements ApiClient {
   final history = <List<String>>[];
   Completer<AssistantReply>? pending;
   AssistantReply reply = const AssistantReply('Synthetic reply');
+  Object? preflightFailure;
+  String? preflightReply;
+  int consentChecks = 0;
 
   @override
-  Future<String?> checkAssistantEmergency(String message) async => null;
+  Future<String?> checkAssistantEmergency(String message) async {
+    if (preflightFailure case final failure?) throw failure;
+    return preflightReply;
+  }
 
   @override
-  Future<AiPrivacyStatus> aiPrivacyStatus() async => const AiPrivacyStatus(
-        enabled: true,
-        providerAvailable: true,
-        version: AiPrivacyStatus.disclosureVersion,
-      );
+  Future<AiPrivacyStatus> aiPrivacyStatus() async {
+    consentChecks++;
+    return const AiPrivacyStatus(
+      enabled: true,
+      providerAvailable: true,
+      version: AiPrivacyStatus.disclosureVersion,
+    );
+  }
 
   @override
   Future<AssistantReply> chat(String message,
@@ -59,6 +68,52 @@ Future<void> _submit(WidgetTester tester, String question,
 }
 
 void main() {
+  testWidgets('failed preflight offers a manual call and never requests AI consent', (tester) async {
+    final api = _ChatApi()..preflightFailure = ApiException('Synthetic transport failure');
+    final calls = <String>[];
+    await tester.pumpWidget(NovaApp(home: Scaffold(body: AssistantScreen(
+      api: api,
+      callNumber: (number) async {
+        calls.add(number);
+        return false;
+      },
+    ))));
+    await tester.enterText(find.byType(TextField), 'Synthetic urgent message');
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('could not check this message for an emergency'), findsOneWidget);
+    expect(api.consentChecks, 0);
+    expect(api.history, isEmpty);
+    expect(calls, isEmpty);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Synthetic urgent message');
+    await tester.tap(find.widgetWithText(FilledButton, 'Call 1990 (Sri Lanka)'));
+    await tester.pumpAndSettle();
+    expect(calls, ['1990']);
+    expect(find.textContaining('Could not open the dialer'), findsOneWidget);
+  });
+
+  testWidgets('urgent preflight and saved-symptom replies expose a call action', (tester) async {
+    final api = _ChatApi()..preflightReply = 'Synthetic emergency guidance';
+    await tester.pumpWidget(NovaApp(home: Scaffold(body: AssistantScreen(api: api))));
+    await tester.enterText(find.byType(TextField), 'Synthetic urgent text');
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await tester.pumpAndSettle();
+    expect(find.text('Synthetic emergency guidance'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Call 1990 (Sri Lanka)'), findsOneWidget);
+    expect(api.consentChecks, 0);
+    expect(api.history, isEmpty);
+
+    await tester.tap(find.bySemanticsLabel('New conversation'));
+    await tester.pumpAndSettle();
+    api.preflightReply = null;
+    api.reply = const AssistantReply('Synthetic recent symptom notice',
+        emergency: true, sources: ['Symptom logs']);
+    await _submit(tester, 'Synthetic saved symptoms');
+    await tester.pumpAndSettle();
+    expect(find.text('Sources: Symptom logs'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Call 1990 (Sri Lanka)'), findsOneWidget);
+  });
+
   testWidgets('new conversation clears the draft and excludes prior questions',
       (tester) async {
     final api = _ChatApi();

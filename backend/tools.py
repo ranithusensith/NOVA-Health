@@ -13,6 +13,7 @@ from typing import Awaitable, Callable
 
 import lab_results
 import rules
+import safety
 from db import InvalidDBResponse
 
 TZ_OFFSET_MIN = int(os.environ.get("LOCAL_TZ_OFFSET_MIN", "330"))  # Sri Lanka = UTC+5:30
@@ -301,7 +302,41 @@ async def get_recent_logs(db, args: dict) -> dict:
         # Without start/end times, multiple entries could overlap or be corrections.
         if len(dates) != len(set(dates)):
             return {"kind": kind, "conflicting": True}
-    return summarize_logs(kind, rows, days)
+    result = summarize_logs(kind, rows, days)
+    if kind == "symptoms" and (alert := _recent_urgent_symptom(rows, utc_now())):
+        result["urgent"] = alert
+    return result
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _recent_urgent_symptom(rows: list[dict], now: datetime) -> tuple[str, str] | None:
+    cutoff = now - timedelta(hours=24)
+    recent = []
+    for row in rows:
+        if row.get("status") != "active":
+            continue
+        try:
+            started = parse_ts(row.get("started_at"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if cutoff <= started <= now:
+            recent.append(row)
+    return safety.logged_emergency(recent)
+
+
+async def recent_saved_emergency(db) -> tuple[str, str] | None:
+    """Check recent active symptoms using the caller's database session."""
+    now = utc_now()
+    cutoff = (now - timedelta(hours=24)).isoformat()
+    rows = await db.select(
+        "symptom_logs", "name,status,started_at",
+        filters={"status": "eq.active", "and": f"(started_at.gte.{cutoff},started_at.lte.{now.isoformat()})"},
+        order="started_at.desc", limit=100,
+    )
+    return _recent_urgent_symptom(rows, now)
 
 
 async def get_heart_rate(db, args: dict) -> dict:

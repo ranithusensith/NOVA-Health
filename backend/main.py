@@ -412,9 +412,16 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
         raise ApiError(400, "INVALID_INPUT", f"Message is too long ({agent.MAX_QUESTION_CHARS} characters maximum).")
 
     emergency = safety.detect_emergency(message)
+    saved = None
+    if not emergency and body.reviewed and "logs" in body.health_data:
+        saved = await tools.recent_saved_emergency(db)
     if emergency:
         # Local emergency advice must work without the external provider or consent.
         result = agent.AgentResult(reply=safety.emergency_reply(emergency, text=message), emergency=True)
+    elif saved:
+        kind, text = saved
+        result = agent.AgentResult(reply=safety.saved_emergency_reply(kind, text=text),
+                                   sources=["symptoms"], emergency=True)
     elif body.emergency_only:
         result = agent.AgentResult(reply="")
     else:

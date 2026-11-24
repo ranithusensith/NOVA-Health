@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../services/api_client.dart';
+import '../services/emergency_service.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/floating_tab_bar.dart';
@@ -13,25 +14,27 @@ import 'emergency_screen.dart';
 enum ChatKind { user, ai, error, typing }
 
 class ChatItem {
-  const ChatItem._(this.kind, [this.text = '', this.sources = const []]);
+  const ChatItem._(this.kind, [this.text = '', this.sources = const [], this.callForHelp = false]);
   factory ChatItem.user(String t) => ChatItem._(ChatKind.user, t);
-  factory ChatItem.ai(String t, {List<String> sources = const []}) =>
-      ChatItem._(ChatKind.ai, t, sources);
+  factory ChatItem.ai(String t, {List<String> sources = const [], bool callForHelp = false}) =>
+      ChatItem._(ChatKind.ai, t, sources, callForHelp);
   factory ChatItem.error(String t) => ChatItem._(ChatKind.error, t);
   static const typing = ChatItem._(ChatKind.typing);
 
   final ChatKind kind;
   final String text;
   final List<String> sources;
+  final bool callForHelp;
 }
 
 /// 06 AI Assistant — iMessage-style chat with suggestion chips and a floating
 /// glass input bar. Replies come from POST /api/v1/assistant/chat
 /// using ApiClient.chat.
 class AssistantScreen extends StatefulWidget {
-  const AssistantScreen({super.key, this.api});
+  const AssistantScreen({super.key, this.api, this.callNumber});
 
   final ApiClient? api;
+  final Future<bool> Function(String)? callNumber;
 
   @override
   State<AssistantScreen> createState() => _AssistantScreenState();
@@ -41,6 +44,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
   static const _greeting = 'Ask me to summarize the health records you choose to share.';
   static const _suggestions = ['Show my recent meal logs', 'How much water did I log today?', 'Summarise my sleep'];
   static const _transcriptLimit = 100;
+  static const _preflightUnavailable =
+      'NOVA could not check this message for an emergency. If anyone may be in immediate danger, call emergency services now.';
 
   final _scroll = ScrollController();
   final _input = TextEditingController();
@@ -80,12 +85,19 @@ class _AssistantScreenState extends State<AssistantScreen> {
     setState(() => _waiting = true);
     ChatItem? reply;
     try {
-      final emergency = await api.checkAssistantEmergency(text);
+      final String? emergency;
+      try {
+        emergency = await api.checkAssistantEmergency(text);
+      } catch (_) {
+        // The user can get help without a network connection or AI consent.
+        reply = ChatItem.ai(_preflightUnavailable, callForHelp: true);
+        return;
+      }
       if (!mounted || !current()) return;
       if (emergency != null) {
         _input.clear();
         setState(() => _items = [..._items, ChatItem.user(text)]);
-        reply = ChatItem.ai(emergency);
+        reply = ChatItem.ai(emergency, callForHelp: true);
         return;
       }
       if (!await ensureAiConsent(context, client: api) || !mounted || !current()) return;
@@ -106,9 +118,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
       _scrollToEnd();
       final response = await api.chat(text, healthData: sharing.healthData, recentQuestions: recent);
       final replyText = response.text.trim();
-      reply = replyText.isEmpty
-          ? ChatItem.error('No reply came back. Please try again.')
-          : ChatItem.ai(replyText, sources: response.sources);
+      if (response.emergency) {
+        reply = ChatItem.ai(replyText.isEmpty ? _preflightUnavailable : replyText,
+            sources: response.sources, callForHelp: true);
+      } else {
+        reply = replyText.isEmpty
+            ? ChatItem.error('No reply came back. Please try again.')
+            : ChatItem.ai(replyText, sources: response.sources);
+      }
     } on ApiException catch (e) {
       reply = ChatItem.error(e.message);
     } catch (_) {
@@ -124,6 +141,20 @@ class _AssistantScreenState extends State<AssistantScreen> {
         });
         if (reply != null) _scrollToEnd();
       }
+    }
+  }
+
+  Future<void> _callAmbulance() async {
+    final call = widget.callNumber ?? EmergencyService.instance.call;
+    try {
+      if (await call(ambulanceNumber)) return;
+    } catch (_) {
+      // Leave the dialable number visible when the phone cannot launch a dialer.
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the dialer. Dial 1990 on a phone in Sri Lanka.')),
+      );
     }
   }
 
@@ -182,7 +213,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
                   ),
                 );
               }
-              return Padding(padding: const EdgeInsets.only(bottom: 12), child: _Bubble(item: _items[i - 1]));
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _Bubble(item: _items[i - 1], onCall: _callAmbulance),
+              );
             },
           ),
           // Scroll-edge fades instead of solid bars.
@@ -292,8 +326,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
 }
 
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.item});
+  const _Bubble({required this.item, required this.onCall});
   final ChatItem item;
+  final VoidCallback onCall;
 
   @override
   Widget build(BuildContext context) {
@@ -316,6 +351,12 @@ class _Bubble extends StatelessWidget {
           if (item.sources.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text('Sources: ${item.sources.join(', ')}',
+                style: NovaType.caption.copyWith(color: c.textSecondary)),
+          ],
+          if (item.callForHelp) ...[
+            const SizedBox(height: 8),
+            FilledButton(onPressed: onCall, child: const Text('Call 1990 (Sri Lanka)')),
+            Text('Outside Sri Lanka, call your local emergency number.',
                 style: NovaType.caption.copyWith(color: c.textSecondary)),
           ],
         ],
