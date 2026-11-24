@@ -1,7 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'scan_models.dart';
-
 /// A saved lab result (medical record).
 class LabRecord {
   const LabRecord({
@@ -12,6 +10,8 @@ class LabRecord {
     this.unit,
     this.refLow,
     this.refHigh,
+    this.referenceText,
+    this.reportedFlag,
     required this.flag,
     this.reportedOn,
     this.reportType,
@@ -24,17 +24,19 @@ class LabRecord {
   final String? unit;
   final double? refLow;
   final double? refHigh;
+  final String? referenceText;
+  final String? reportedFlag;
   final String flag;
   final DateTime? reportedOn;
   final String? reportType;
 
   String get resultText {
-    final v = value;
-    final text = v == null ? (valueText ?? '') : formatNumber(v);
+    final text = valueText ?? (value == null ? '' : formatNumber(value!));
     return unit == null || unit!.isEmpty ? text : '$text $unit';
   }
 
   String get rangeText {
+    if (referenceText case final text?) return text;
     if (refLow != null && refHigh != null) return '${formatNumber(refLow!)} to ${formatNumber(refHigh!)}';
     if (refHigh != null) return 'below ${formatNumber(refHigh!)}';
     if (refLow != null) return 'above ${formatNumber(refLow!)}';
@@ -56,40 +58,12 @@ class LabRepository {
   SupabaseClient get _db => Supabase.instance.client;
   String get _uid => _db.auth.currentUser!.id;
 
-  String _ymd(DateTime d) =>
-      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
-  /// Saves the rows the user kept ticked. Returns how many were saved.
-  Future<int> save(ReportScan scan) async {
-    final date = scan.reportDate ?? DateTime.now();
-    final rows = [
-      for (final r in scan.results)
-        if (r.include && r.test.trim().isNotEmpty)
-          {
-            'user_id': _uid,
-            'test_name': r.test.trim(),
-            'value': r.value,
-            'value_text': r.valueText,
-            'unit': r.unit,
-            'ref_low': r.refLow,
-            'ref_high': r.refHigh,
-            'flag': r.flag,
-            'report_type': scan.reportType,
-            'reported_on': _ymd(date),
-            'source': 'scan',
-          },
-    ];
-    if (rows.isEmpty) return 0;
-    await _db.from('lab_results').insert(rows);
-    return rows.length;
-  }
-
   Future<List<LabRecord>> list({int limit = 200}) async {
     final rows = await _db
         .from('lab_results')
-        .select('id,test_name,value,value_text,unit,ref_low,ref_high,flag,report_type,reported_on,created_at')
+        .select('id,test_name,value,value_text,unit,ref_low,ref_high,flag,report_type,reported_on,created_at,reference_text,reported_flag')
         .eq('user_id', _uid)
-        .order('reported_on', ascending: false)
+        .order('reported_on', ascending: false, nullsFirst: false)
         .order('created_at', ascending: false)
         .limit(limit);
     return [
@@ -102,6 +76,8 @@ class LabRepository {
           unit: r['unit'] as String?,
           refLow: (r['ref_low'] as num?)?.toDouble(),
           refHigh: (r['ref_high'] as num?)?.toDouble(),
+          referenceText: r['reference_text'] as String?,
+          reportedFlag: r['reported_flag'] as String?,
           flag: (r['flag'] as String?) ?? 'unknown',
           reportedOn: DateTime.tryParse((r['reported_on'] as String?) ?? ''),
           reportType: r['report_type'] as String?,

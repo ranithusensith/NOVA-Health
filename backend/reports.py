@@ -55,6 +55,7 @@ async def build_daily_data(db, day: date) -> dict:
                             {"metric": "eq.heart_rate"})
     taken, unassigned = await _day_doses(db, day)
     meds = (await tools.get_medications(db, {}, day=day))["medications"]
+    labs = await tools.get_lab_results(db, {}, day=day)
 
     scheduled = sum(tools.scheduled_doses_on(m, day) for m in meds)
     return {
@@ -70,6 +71,7 @@ async def build_daily_data(db, day: date) -> dict:
         "doses_scheduled": scheduled,
         "doses_taken": taken,
         "unassigned_dose_logs": unassigned,
+        "lab_results": labs.get("results", []),
     }
 
 
@@ -91,6 +93,15 @@ def highlights(d: dict) -> list[str]:
         out.append(f"Medicines: {d['doses_taken']} of {d['doses_scheduled']} doses marked taken")
     if d["unassigned_dose_logs"]:
         out.append(f"Medicines: {d['unassigned_dose_logs']} dose log(s) without a scheduled time")
+    for lab in d["lab_results"]:
+        if lab["result"] is None:
+            continue
+        observation = f"{lab['result']} {lab['unit'] or ''}".rstrip()
+        if isinstance(lab["reference"], str):
+            observation += f" · reference {lab['reference']}"
+        if lab["flag"] not in (None, "unknown"):
+            observation += f" · recorded flag {lab['flag']}"
+        out.append(f"Lab result: {lab['test']} {observation}")
     return out
 
 

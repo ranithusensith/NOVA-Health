@@ -99,8 +99,7 @@ class _RecordsScreenState extends State<RecordsScreen> {
                 EmptyStateCard(
                   icon: CupertinoIcons.doc_text,
                   title: 'No results yet',
-                  body: 'Scan a lab report and NOVA will keep its results here, with a tag for anything '
-                      'outside the printed range.',
+                  body: 'Scan a lab report to review and save its results here.',
                   actionLabel: 'Scan a report',
                   onAction: _scan,
                 )
@@ -146,7 +145,10 @@ class _RecordsScreenState extends State<RecordsScreen> {
                                       ),
                                     ),
                                     const SizedBox(width: 8),
-                                    LabFlagChip(flag: entry.value[i].flag),
+                                    if (entry.value[i].reportedFlag case final flag?)
+                                      Flexible(child: Text('Printed flag $flag', style: NovaType.caption))
+                                    else if (entry.value[i].flag != 'unknown')
+                                      LabFlagChip(flag: entry.value[i].flag),
                                   ],
                                 ),
                               ),
@@ -159,7 +161,7 @@ class _RecordsScreenState extends State<RecordsScreen> {
                 ],
                 const SizedBox(height: NovaSpace.gap),
                 Text(
-                  'Tags come from the ranges printed on your reports. Swipe a row to delete it.',
+                  'Swipe a row to delete it.',
                   style: NovaType.footnote.copyWith(color: c.textSecondary),
                 ),
               ],

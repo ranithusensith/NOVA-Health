@@ -90,9 +90,9 @@ async def _safety_notes(db) -> list[dict]:
 
 def _minimize_result(name: str, result: dict, identifiers: tuple[str, ...]) -> dict:
     """Project each tool's response onto clinical fields used by the assistant."""
-    def clean(value):
+    def clean(value, *, limit=160):
         if isinstance(value, str):
-            return safety.redact_chat(value, identifiers)[:160]
+            return safety.redact_chat(value, identifiers)[:limit]
         if isinstance(value, list):
             return [clean(item) for item in value[:15]]
         return value if value is None or type(value) in (int, bool, float) else None
@@ -103,7 +103,16 @@ def _minimize_result(name: str, result: dict, identifiers: tuple[str, ...]) -> d
     }
     if name in row_specs:
         key, fields = row_specs[name]
-        return {key: [{field: clean(row.get(field)) for field in fields} for row in result.get(key, [])[:15]]}
+        rows = [
+            {field: clean(row.get(field), limit=240 if field == "reference" else 160)
+             for field in fields}
+            for row in result.get(key, [])[:15]
+        ]
+        if name == "get_lab_results":
+            # Keep whole observations within the prompt's per-tool limit.
+            while len(json.dumps({"tool": name, "args": {}, "result": {key: rows}}, ensure_ascii=False)) > MAX_OBSERVATION_CHARS:
+                rows.pop()
+        return {key: rows}
     if name == "get_recent_logs":
         out = {key: clean(result[key]) for key in (
             "kind", "days", "days_with_data", "average_ml_on_logged_days",

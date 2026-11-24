@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
+import lab_results
 import rules
 
 TZ_OFFSET_MIN = int(os.environ.get("LOCAL_TZ_OFFSET_MIN", "330"))  # Sri Lanka = UTC+5:30
@@ -285,23 +286,15 @@ async def get_cycle(db, args: dict) -> dict:
     return summarize_cycle(rows)
 
 
-async def get_lab_results(db, args: dict) -> dict:
+async def get_lab_results(db, args: dict, *, day: date | None = None) -> dict:
     rows = await db.select(
-        "lab_results", "test_name,value,value_text,unit,ref_low,ref_high,flag,reported_on",
-        order="reported_on.desc.nullslast,created_at.desc", limit=40,
+        "lab_results", lab_results.RESULT_COLUMNS,
+        filters={"reported_on": f"eq.{day.isoformat()}"} if day is not None else None,
+        order="reported_on.desc.nullslast,created_at.desc", limit=40 if day is None else 200,
     )
     if not rows:
         return {"count": 0, "note": "No lab results saved yet."}
-    items = []
-    for r in rows:
-        items.append({
-            "test": r.get("test_name"),
-            "result": r.get("value") if r.get("value") is not None else r.get("value_text"),
-            "unit": r.get("unit"),
-            "reference": [r.get("ref_low"), r.get("ref_high")],
-            "flag": r.get("flag"),
-            "date": r.get("reported_on"),
-        })
+    items = [lab_results.saved_observation(row) for row in rows]
     return {"count": len(items), "results": items,
             "note": "Copied from the user's own reports. Do not diagnose from these."}
 
@@ -347,7 +340,8 @@ TOOLS: dict[str, ToolSpec] = {
         "Heart rate summary (latest, average, min, max, resting average).",
         'args: {"days": 1-30 (default 7)}', get_heart_rate, "heart rate"),
     "get_lab_results": ToolSpec(
-        "Lab test results the user saved from scanned reports: value, unit, reference range, and low/normal/high flag.",
+        "Saved lab observations. Quote result text and comparison operators exactly. A threshold is not an exact "
+        "measurement. Report a flag only as recorded; never infer normality or diagnose from these observations.",
         "no args", get_lab_results, "lab results"),
     "get_cycle": ToolSpec(
         "Menstrual cycle summary from the user's own period logs.", "no args", get_cycle, "cycle"),

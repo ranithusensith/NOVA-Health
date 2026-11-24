@@ -153,38 +153,45 @@ class FoodScan {
 class LabResultDraft {
   LabResultDraft({
     required this.test,
-    this.value,
     this.valueText,
+    this.extractedValueText,
     this.unit,
-    this.refLow,
-    this.refHigh,
-    required this.flag,
+    this.referenceText,
+    this.reportedFlag,
   });
 
   final String test;
-  final double? value;
   final String? valueText;
+  final String? extractedValueText;
   final String? unit;
-  final double? refLow;
-  final double? refHigh;
-  final String flag; // low | normal | high | unknown
+  final String? referenceText;
+  final String? reportedFlag;
 
   /// Set by the confirm screen when the user unticks a row.
   bool include = true;
 
   factory LabResultDraft.fromJson(Map<String, dynamic> j) => LabResultDraft(
         test: (j['test'] as String?) ?? '',
-        value: (j['value'] as num?)?.toDouble(),
         valueText: j['value_text'] as String?,
+        extractedValueText: j['value_text'] as String?,
         unit: j['unit'] as String?,
-        refLow: (j['ref_low'] as num?)?.toDouble(),
-        refHigh: (j['ref_high'] as num?)?.toDouble(),
-        flag: (j['flag'] as String?) ?? 'unknown',
+        referenceText: j['reference_text'] as String?,
+        reportedFlag: j['reported_flag'] as String?,
       );
+
+  Map<String, dynamic> toReviewedJson() => {
+        'test': test,
+        'value_text': valueText,
+        'extracted_value_text': extractedValueText,
+        'unit': unit,
+        'reference_text': referenceText,
+        'reported_flag': reportedFlag,
+      };
 }
 
 class ReportScan {
   const ReportScan({
+    required this.scanId,
     required this.results,
     required this.confidence,
     this.reportType,
@@ -192,6 +199,7 @@ class ReportScan {
     this.notes,
   });
 
+  final String scanId;
   final List<LabResultDraft> results;
   final double confidence;
   final String? reportType;
@@ -199,6 +207,7 @@ class ReportScan {
   final String? notes;
 
   factory ReportScan.fromJson(Map<String, dynamic> j) => ReportScan(
+        scanId: j['scan_id'] as String,
         results: [
           for (final r in (j['results'] as List? ?? const []))
             LabResultDraft.fromJson((r as Map).cast<String, dynamic>()),
@@ -208,4 +217,17 @@ class ReportScan {
         reportDate: DateTime.tryParse((j['report_date'] as String?) ?? ''),
         notes: j['notes'] as String?,
       );
+
+  Map<String, dynamic> toReviewedJson({
+    required String expectedUserId,
+    required DateTime? reviewedDate,
+    required List<LabResultDraft> reviewedRows,
+  }) => {
+        'scan_id': scanId,
+        'expected_user_id': expectedUserId,
+        'reviewed': true,
+        'report_type': reportType,
+        'report_date': reviewedDate?.toIso8601String().split('T').first,
+        'results': [for (final row in reviewedRows) row.toReviewedJson()],
+      };
 }

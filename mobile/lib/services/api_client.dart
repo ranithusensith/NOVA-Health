@@ -32,7 +32,7 @@ class ApiClient {
     final uri = Uri.parse('${AppConfig.apiUrl}$path');
     if (path.startsWith('/api/v1/assistant/') ||
         path.startsWith('/api/v1/privacy/') ||
-        (path.startsWith('/api/v1/scan/') && !path.endsWith('/confirm'))) {
+        (path.startsWith('/api/v1/scan/') && path != '/api/v1/scan/prescription/confirm')) {
       const release = bool.fromEnvironment('dart.vm.product');
       const loopback = {'localhost', '127.0.0.1', '::1', '10.0.2.2'};
       if (uri.scheme != 'https' && (release || uri.scheme != 'http' || !loopback.contains(uri.host))) {
@@ -172,17 +172,38 @@ class ApiClient {
     if (AppConfig.useMockApi) {
       await Future<void>.delayed(const Duration(milliseconds: 1400));
       return ReportScan(
+        scanId: '00000000-0000-4000-8000-000000000001',
         reportType: 'Full blood count',
-        reportDate: DateTime.now(),
         confidence: 0.9,
         results: [
-          LabResultDraft(test: 'Haemoglobin', value: 11.2, unit: 'g/dL', refLow: 13, refHigh: 17, flag: 'low'),
-          LabResultDraft(test: 'White blood cells', value: 7400, unit: '/uL', refLow: 4000, refHigh: 11000, flag: 'normal'),
-          LabResultDraft(test: 'Platelets', value: 390, unit: '10^3/uL', refLow: 150, refHigh: 450, flag: 'normal'),
+          LabResultDraft(test: 'Haemoglobin', valueText: '11.2', unit: 'g/dL', referenceText: '13.0 – 17.0', reportedFlag: 'L'),
+          LabResultDraft(test: 'White blood cells', valueText: '7,400', unit: '/uL', referenceText: '4,000 – 11,000'),
+          LabResultDraft(test: 'Platelets', valueText: '<390', unit: '10^3/uL', referenceText: '150 – 450'),
         ],
       );
     }
     return ReportScan.fromJson(await _postJson('/api/v1/scan/report', {'text': reviewedText, 'reviewed': true}));
+  }
+
+  Future<int> confirmLabReport(
+    ReportScan scan,
+    String? expectedUserId,
+    DateTime? reviewedDate,
+    List<LabResultDraft> reviewedRows,
+  ) async {
+    if (AppConfig.useMockApi) return 0;
+    if (expectedUserId == null || aiAccountId != expectedUserId) {
+      throw ApiException('Sign in to the account that opened this report.');
+    }
+    final data = await _postJson('/api/v1/scan/report/confirm', scan.toReviewedJson(
+      expectedUserId: expectedUserId,
+      reviewedDate: reviewedDate,
+      reviewedRows: reviewedRows,
+    ));
+    if (data['saved'] != reviewedRows.length) {
+      throw ApiException('Could not verify the save. Check Medical records before trying again.');
+    }
+    return reviewedRows.length;
   }
 
   Future<FoodScan> scanFood(XFile file) async {
