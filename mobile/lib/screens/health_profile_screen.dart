@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../data/health_repository.dart';
 import '../data/profile_models.dart';
 import '../data/profile_repository.dart';
 import '../theme/nova_theme.dart';
@@ -49,6 +48,7 @@ class _HealthProfileScreenState extends State<HealthProfileScreen> {
 
   bool _loading = true;
   bool _saving = false;
+  late String _loadedAccountId;
   String? _loadError;
   String? _formError;
 
@@ -72,12 +72,16 @@ class _HealthProfileScreenState extends State<HealthProfileScreen> {
       _loadError = null;
     });
     try {
-      final profile = await ProfileRepository.instance.load();
-      final allergies = await ProfileRepository.instance.allergies();
-      final metaName =
-          ((Supabase.instance.client.auth.currentUser?.userMetadata?['full_name'] as String?) ?? '').trim();
+      final auth = Supabase.instance.client.auth;
+      final user = auth.currentUser;
+      if (user == null) throw Exception('Sign in again to open your health profile.');
+      final profile = await ProfileRepository.instance.load(accountId: user.id);
+      final allergies = await ProfileRepository.instance.allergies(accountId: user.id);
+      if (auth.currentUser?.id != user.id) throw Exception('Sign in again to open your health profile.');
+      final metaName = ((user.userMetadata?['full_name'] as String?) ?? '').trim();
       if (!mounted) return;
       setState(() {
+        _loadedAccountId = user.id;
         _name.text = profile.fullName.isNotEmpty ? profile.fullName : metaName;
         _birth = profile.birthDate;
         _sex = profile.sex;
@@ -120,17 +124,17 @@ class _HealthProfileScreenState extends State<HealthProfileScreen> {
   }
 
   String? _validate() {
-    if (_name.text.trim().length < 2) return 'Enter your name.';
+    if (_name.text.trim().runes.length < 2) return 'Enter your name.';
     if (_birth == null) return 'Choose your date of birth.';
     if (_sex == null) return 'Choose an option for sex.';
     final h = _num(_height);
     final w = _num(_weight);
-    if (h == null || h < 50 || h > 250) return 'Enter your height in cm (50 to 250).';
-    if (w == null || w < 2 || w > 400) return 'Enter your weight in kg (2 to 400).';
+    if (h == null || !h.isFinite || h < 50 || h > 250) return 'Enter your height in cm (50 to 250).';
+    if (w == null || !w.isFinite || w < 2 || w > 400) return 'Enter your weight in kg (2 to 400).';
     return null;
   }
 
-  HealthProfile _current({required bool done}) => HealthProfile(
+  HealthProfile _current() => HealthProfile(
         fullName: _name.text.trim(),
         birthDate: _birth,
         sex: _sex,
@@ -139,7 +143,6 @@ class _HealthProfileScreenState extends State<HealthProfileScreen> {
         weightKg: _num(_weight),
         conditions: _conditions.toList(),
         medicalNotes: _notes.text,
-        onboardingDone: done,
       );
 
   Future<void> _save() async {
@@ -154,9 +157,11 @@ class _HealthProfileScreenState extends State<HealthProfileScreen> {
       _formError = null;
     });
     try {
-      await ProfileRepository.instance.save(_current(done: true));
-      await ProfileRepository.instance.replaceAllergies(_allergies);
-      HealthRepository.notifyChanged();
+      await ProfileRepository.instance.save(
+        _current(),
+        accountId: _loadedAccountId,
+        allergies: _allergies,
+      );
       if (!mounted) return;
       if (widget.onboarding) {
         widget.onDone?.call();
@@ -178,7 +183,7 @@ class _HealthProfileScreenState extends State<HealthProfileScreen> {
     if (_saving) return;
     setState(() => _saving = true);
     try {
-      await ProfileRepository.instance.save(HealthProfile(fullName: _name.text.trim(), onboardingDone: true));
+      await ProfileRepository.instance.skipOnboarding(_name.text, accountId: _loadedAccountId);
       if (mounted) widget.onDone?.call();
     } catch (e) {
       if (mounted) {
@@ -216,7 +221,7 @@ class _HealthProfileScreenState extends State<HealthProfileScreen> {
     final pad = MediaQuery.paddingOf(context);
     final onboarding = widget.onboarding;
 
-    final bmiProfile = _current(done: false);
+    final bmiProfile = _current();
     final bmi = bmiProfile.bmi;
     final bmiNote = bmiProfile.bmiNote;
 
