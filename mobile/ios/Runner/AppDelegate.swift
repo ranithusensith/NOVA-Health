@@ -1,4 +1,5 @@
 import Flutter
+import HealthKit
 import MessageUI
 import UIKit
 import UserNotifications
@@ -16,9 +17,18 @@ import UserNotifications
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    let messenger = engineBridge.applicationRegistrar.messenger()
+    let healthKit = FlutterMethodChannel(name: "nova_health/healthkit", binaryMessenger: messenger)
+    healthKit.setMethodCallHandler { call, result in
+      guard call.method == "isHealthDataAvailable" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      result(HKHealthStore.isHealthDataAvailable())
+    }
     let channel = FlutterMethodChannel(
       name: "nova_health/emergency",
-      binaryMessenger: engineBridge.applicationRegistrar.messenger()
+      binaryMessenger: messenger
     )
     channel.setMethodCallHandler { [weak self] call, result in
       guard call.method == "openSms" else {

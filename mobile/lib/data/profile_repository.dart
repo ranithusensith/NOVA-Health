@@ -16,7 +16,8 @@ class ProfileRepository {
 
   final SupabaseClient? _client;
   SupabaseClient get _db => _client ?? Supabase.instance.client;
-  String get _uid => _db.auth.currentUser!.id;
+  String? get currentAccountId => _db.auth.currentUser?.id;
+  String get _uid => currentAccountId!;
 
   // ------------------------------------------------------------ profile
   /// True until the user has finished (or skipped) the first-login questions.
@@ -111,13 +112,17 @@ class ProfileRepository {
   }
 
   /// Saves readings from Apple Health or Health Connect. Duplicates are ignored,
-  /// so syncing twice is safe. Returns how many readings were sent.
-  Future<int> importHeartSamples(List<HeartSample> samples, {required String device}) async {
+  /// so syncing twice is safe. Returns how many readings were inserted.
+  Future<int> importHeartSamples(
+    List<HeartSample> samples, {
+    required String device,
+    required String accountId,
+  }) async {
     if (samples.isEmpty) return 0;
     final rows = [
       for (final s in samples)
         {
-          'user_id': _uid,
+          'user_id': accountId,
           'metric': 'heart_rate',
           'value': s.bpm,
           'recorded_at': s.at.toUtc().toIso8601String(),
@@ -125,14 +130,20 @@ class ProfileRepository {
           'context': 'unknown',
         },
     ];
+    var inserted = 0;
     for (var i = 0; i < rows.length; i += 200) {
+      if (currentAccountId != accountId) {
+        throw StateError('The account changed during heart rate import.');
+      }
       final chunk = rows.sublist(i, math.min(i + 200, rows.length));
-      await _db
+      final saved = await _db
           .from('wearable_samples')
-          .upsert(chunk, onConflict: 'user_id,metric,device,recorded_at', ignoreDuplicates: true);
+          .upsert(chunk, onConflict: 'user_id,metric,device,recorded_at', ignoreDuplicates: true)
+          .select('id');
+      inserted += saved.length;
     }
-    HealthRepository.notifyChanged();
-    return rows.length;
+    if (inserted > 0 && currentAccountId == accountId) HealthRepository.notifyChanged();
+    return inserted;
   }
 
   // ------------------------------------------------------------ cycle

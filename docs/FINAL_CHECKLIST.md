@@ -8,6 +8,19 @@
 5. `flutter analyze` has no errors; `flutter test` passes.
 6. Release build: `flutter build apk --release --dart-define-from-file=dart_defines.json`.
 
+## Apple Health heart rate
+
+Runner uses `Runner/Runner.entitlements` in Debug, Profile, and Release. The file enables basic HealthKit access. NOVA requests read access to Heart Rate only, when a signed-in user chooses to import. An authorization request can finish successfully even when the user declines read access. The screen treats an empty result as no readable readings and keeps manual entry available.
+
+Before device testing, open `mobile/ios/Runner.xcworkspace`. In **Runner → Signing & Capabilities**, select the team's approved development signing configuration and verify that the registered app identifier and provisioning profile include HealthKit. Keep local signing credentials and profiles outside the repository. Verify the signed app carries `com.apple.developer.healthkit` before installing it. An unsigned build checks compilation and project settings. Provisioning and actual HealthKit access require a signed build.
+
+Use a dedicated test iPhone, synthetic heart-rate samples, and a disposable NOVA account and backend. Keep personal Health records off the test device.
+
+- On a fresh install, confirm the system sheet requests only Heart Rate read access. Deny access, then confirm the app shows no verified connection and still allows manual entry.
+- Grant Heart Rate access with an empty test store. Then add synthetic samples and verify that only readable, in-range heart-rate samples appear under the intended NOVA account. Import again and verify that existing readings are skipped.
+- Revoke read access and retry. Check the locked-device and unavailable-service paths. Switch synthetic NOVA accounts during an import and verify that pending readings never move to the new account.
+- Verify the signed build and these cases on the supported physical iPhone versions before release.
+
 ## Backend
 1. `python -m pytest -q` passes.
 2. Deployed and `/health` works (see DEPLOY.md).
