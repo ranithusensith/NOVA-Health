@@ -16,6 +16,7 @@ Run each file in order and stop on any SQL error. Apply the full sequence before
 | 4 | [004_ai_privacy.sql](../backend/changes/004_ai_privacy.sql) | Add opt-in AI consent and the account-scoped legacy chat cleanup RPC. |
 | 5 | [005_extension_access.sql](../backend/changes/005_extension_access.sql) | Harden grants and add a restrictive ownership policy for lab results and consent. |
 | 6 | [006_patient_isolation.sql](../backend/changes/006_patient_isolation.sql) | Remove excess client grants, restrict legacy chat history to the cleanup RPC, and validate any missing lab, consent, and chat owner relationships. |
+| 7 | [007_atomic_health_profile.sql](../backend/changes/007_atomic_health_profile.sql) | Save the caller's confirmed allergies, profile, and onboarding completion in one transaction. |
 
 Supabase Auth owns account identities. A signup creates a profile with the account UUID, the optional display name, empty conditions and goals, and onboarding marked incomplete. Health details remain unset until the user enters them. Existing profile fields retain their saved values. AI processing consent still requires its own explicit opt-in.
 
@@ -29,13 +30,14 @@ Check the migration history and review a schema-only snapshot against these file
 - Foreign key validation and the wearable import index check the existing data. An orphaned reference, mismatched dose owner or duplicate wearable import key can abort `001` and roll back its changes. Resolve any conflicts against the source records before scheduling the migration.
 - `006` also rolls back if an existing lab result, consent record, or chat has an orphaned owner where a new foreign key is needed. Review any old client integrations with `chat_messages` before an upgrade. Current Flutter and FastAPI use the cleanup RPC as their only access to that table.
 - On legacy dose logs, `006` removes an immediate medication-ID-only foreign key with the default `NO ACTION` behavior when the validated owner-aware cascade is present. That redundant constraint could block a legacy account deletion before the cascade ran.
+- Apply `007` before rolling out the Flutter client that calls `save_health_profile`. Earlier clients keep their existing direct-write behavior until upgraded.
 - Run the upgrade during a maintenance window. The signup trigger installation and constraint validation acquire locks. Take a backup before applying changes to an existing project.
 
 ## Application database contract
 
 | Area | Tables and access |
 |---|---|
-| Profile and onboarding | Flutter reads and updates its `profiles` row and reads, adds and removes `allergies`. FastAPI reads profile context and confirmed allergies. |
+| Profile and onboarding | Flutter reads its profile and confirmed allergies and saves them through `save_health_profile`. Skipping onboarding updates only the name and onboarding flag. FastAPI reads profile context and confirmed allergies. |
 | Medication and reminders | Flutter reads, adds, edits and stops `medications`, and logs or undoes `medication_logs`. FastAPI reads active medication for reports and safety checks and inserts reviewed prescriptions. The dose FK checks both medication ID and owner. |
 | Tracking and reports | Flutter logs water, sleep, mood and meals. FastAPI reads these tables and `symptom_logs`. Time indexes support per-account history. |
 | Wearables and cycle | Flutter reads, imports and deletes `wearable_samples` and manages `period_logs`. FastAPI reads summaries. The unique wearable key matches Flutter's duplicate-safe import. |
@@ -64,16 +66,18 @@ PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
 psql -X -v ON_ERROR_STOP=1 -f backend/changes/tests/patient_isolation_legacy_fixture.sql
 
 PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
-  -f backend/changes/006_patient_isolation.sql
+  -f backend/changes/006_patient_isolation.sql \
+  -f backend/changes/007_atomic_health_profile.sql
 
 psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/verify.sql \
-  -f backend/changes/tests/patient_isolation.sql
+  -f backend/changes/tests/patient_isolation.sql \
+  -f backend/changes/tests/atomic_health_profile.sql
 ```
 
 Start the test session as the disposable cluster administrator. The fixtures simulate the Auth schema, the Auth insert role, PostgREST roles and default API grants. They verify PostgreSQL access and integrity. Use separate loopback HTTP services or a disposable Supabase environment for token and HTTP integration.
 
-To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture, apply `006`, and run both verification files.
+To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture, apply `006` and `007`, and run all three verification files.
 
 ## H2 patient isolation and verification limits
 
@@ -87,3 +91,9 @@ The optional legacy chat table retains existing policies underneath the restrict
 - Global uniqueness checks can reveal whether a known or guessable row ID exists through a conflict response. RLS protects the row contents. The SOS audit table accepts owner-scoped client inserts, so rows there do not independently prove a provider action.
 - The signed-in database role can write its own medication rows directly. The reviewed-prescription safety and acknowledgement checks run on the FastAPI confirmation route and the supported Flutter workflow. The database owner policy does not attest to the origin or review of a patient's own medication row.
 - `006` retains existing restrictive policies and grants needed by the app without expanding them. Validate expected owner workflows against the target deployment schema. Paths and effects of deployment-specific delete triggers or foreign keys depend on that schema.
+
+## H3 health profile saves
+
+`save_health_profile` uses the authenticated caller's grants and RLS policies. It checks the form's loaded account against `auth.uid()` and uses `auth.uid()` for all writes. It reconciles confirmed allergies by case-insensitive name, retains matching rows and their metadata, and updates the profile and onboarding flag after the allergy changes succeed. Repeating the same save preserves allergy IDs. The explicit skip path keeps previously saved health details and allergies.
+
+The RPC serializes saves for the same profile. Conflicting forms still use the latest completed save because the app has no version check. Earlier app versions and direct API clients can still write authorized rows separately. During rollout, verify any custom grants and policies in a disposable copy, including whether the caller can read all of its confirmed allergy rows.

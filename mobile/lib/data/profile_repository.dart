@@ -11,10 +11,11 @@ String _ymd(DateTime d) =>
 /// Health profile, allergies, heart rate and cycle data in Supabase.
 /// Row-level security keeps every query limited to the signed-in user.
 class ProfileRepository {
-  ProfileRepository._();
-  static final ProfileRepository instance = ProfileRepository._();
+  ProfileRepository({SupabaseClient? client}) : _client = client;
+  static final ProfileRepository instance = ProfileRepository();
 
-  SupabaseClient get _db => Supabase.instance.client;
+  final SupabaseClient? _client;
+  SupabaseClient get _db => _client ?? Supabase.instance.client;
   String get _uid => _db.auth.currentUser!.id;
 
   // ------------------------------------------------------------ profile
@@ -25,55 +26,49 @@ class ProfileRepository {
     return row['onboarding_done'] != true;
   }
 
-  Future<HealthProfile> load() async {
+  Future<HealthProfile> load({String? accountId}) async {
     final row = await _db
         .from('profiles')
         .select('full_name,birth_date,sex,blood_type,height_cm,weight_kg,conditions,medical_notes,onboarding_done')
-        .eq('id', _uid)
+        .eq('id', accountId ?? _uid)
         .maybeSingle();
     if (row == null) return const HealthProfile();
     return HealthProfile.fromRow(row);
   }
 
-  Future<void> save(HealthProfile profile) async {
-    final updated = await _db.from('profiles').update(profile.toRow()).eq('id', _uid).select('id');
+  Future<void> save(
+    HealthProfile profile, {
+    required String accountId,
+    required List<String> allergies,
+  }) async {
+    final fields = profile.toRow()..remove('onboarding_done');
+    await _db.rpc<void>('save_health_profile', params: {
+      'p_expected_user_id': accountId,
+      for (final field in fields.entries) 'p_${field.key}': field.value,
+      'p_allergies': List<String>.of(allergies),
+    });
+    HealthRepository.notifyChanged();
+  }
+
+  Future<void> skipOnboarding(String fullName, {required String accountId}) async {
+    final name = fullName.trim();
+    final updated = await _db.from('profiles').update({
+      'full_name': name.isEmpty ? null : name,
+      'onboarding_done': true,
+    }).eq('id', accountId).select('id');
     if (updated.isEmpty) throw Exception('Profile not found. Sign out and sign in again.');
     HealthRepository.notifyChanged();
   }
 
   // ------------------------------------------------------------ allergies
-  Future<List<AllergyRecord>> allergies() => _allergiesFor(_uid);
-
-  Future<List<AllergyRecord>> _allergiesFor(String userId) async {
+  Future<List<AllergyRecord>> allergies({String? accountId}) async {
     final rows = await _db
         .from('allergies')
         .select('id,name')
-        .eq('user_id', userId)
+        .eq('user_id', accountId ?? _uid)
         .eq('status', 'confirmed')
         .order('name');
     return [for (final r in rows) AllergyRecord(id: r['id'] as String, name: r['name'] as String)];
-  }
-
-  /// Makes the saved allergy list match [names] (adds new ones, removes the rest).
-  Future<void> replaceAllergies(List<String> names) async {
-    final userId = _uid;
-    final existing = await _allergiesFor(userId);
-    final wanted = <String, String>{};
-    for (final n in names) {
-      final t = n.trim();
-      if (t.isNotEmpty) wanted[t.toLowerCase()] = t;
-    }
-    for (final a in existing) {
-      if (!wanted.containsKey(a.name.toLowerCase())) {
-        await _db.from('allergies').delete().eq('id', a.id).eq('user_id', userId);
-      }
-    }
-    final have = {for (final a in existing) a.name.toLowerCase()};
-    final toAdd = [
-      for (final e in wanted.entries)
-        if (!have.contains(e.key)) {'user_id': userId, 'name': e.value, 'source': 'user', 'status': 'confirmed'},
-    ];
-    if (toAdd.isNotEmpty) await _db.from('allergies').insert(toAdd);
   }
 
   // ------------------------------------------------------------ heart rate
