@@ -126,17 +126,27 @@ def llm_to_api_error(e: llm.LLMError) -> ApiError:
 # Auth: ask Supabase who owns this token
 # ---------------------------------------------------------------
 async def current_user(authorization: str | None = Header(default=None)) -> dict:
-    if not authorization or not authorization.startswith("Bearer "):
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token or any(c.isspace() for c in token):
         raise HTTPException(401, "Missing bearer token")
-    token = authorization.split(" ", 1)[1]
-    async with httpx.AsyncClient(timeout=10) as client:
-        res = await client.get(
-            f"{SUPABASE_URL}/auth/v1/user",
-            headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_PUBLISHABLE_KEY},
-        )
-    if res.status_code != 200:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_PUBLISHABLE_KEY},
+            )
+    except httpx.HTTPError:
+        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session.") from None
+    if res.status_code in (400, 401, 403):
         raise HTTPException(401, "Invalid or expired token")
-    return res.json()  # contains "id" and "email"
+    if res.status_code != 200:
+        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session.")
+    try:
+        user = res.json()
+        user["id"] = str(uuid.UUID(user["id"]))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise ApiError(503, "AUTH_UNAVAILABLE", "Could not verify your session.") from None
+    return user
 
 
 async def get_db(

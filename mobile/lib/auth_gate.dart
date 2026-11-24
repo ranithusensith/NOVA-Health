@@ -76,7 +76,7 @@ class _MissingConfig extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(NovaSpace.margin),
             child: Text(
-              'Missing SUPABASE_URL or SUPABASE_KEY.\n\n'
+              'Set SUPABASE_URL and a publishable or legacy anon SUPABASE_KEY.\n\n'
               'Run with:\nflutter run --dart-define-from-file=dart_defines.json',
               textAlign: TextAlign.center,
               style: NovaType.body.copyWith(color: c.textPrimary),

@@ -42,11 +42,13 @@ class ProfileRepository {
   }
 
   // ------------------------------------------------------------ allergies
-  Future<List<AllergyRecord>> allergies() async {
+  Future<List<AllergyRecord>> allergies() => _allergiesFor(_uid);
+
+  Future<List<AllergyRecord>> _allergiesFor(String userId) async {
     final rows = await _db
         .from('allergies')
         .select('id,name')
-        .eq('user_id', _uid)
+        .eq('user_id', userId)
         .eq('status', 'confirmed')
         .order('name');
     return [for (final r in rows) AllergyRecord(id: r['id'] as String, name: r['name'] as String)];
@@ -54,7 +56,8 @@ class ProfileRepository {
 
   /// Makes the saved allergy list match [names] (adds new ones, removes the rest).
   Future<void> replaceAllergies(List<String> names) async {
-    final existing = await allergies();
+    final userId = _uid;
+    final existing = await _allergiesFor(userId);
     final wanted = <String, String>{};
     for (final n in names) {
       final t = n.trim();
@@ -62,13 +65,13 @@ class ProfileRepository {
     }
     for (final a in existing) {
       if (!wanted.containsKey(a.name.toLowerCase())) {
-        await _db.from('allergies').delete().eq('id', a.id);
+        await _db.from('allergies').delete().eq('id', a.id).eq('user_id', userId);
       }
     }
     final have = {for (final a in existing) a.name.toLowerCase()};
     final toAdd = [
       for (final e in wanted.entries)
-        if (!have.contains(e.key)) {'user_id': _uid, 'name': e.value, 'source': 'user', 'status': 'confirmed'},
+        if (!have.contains(e.key)) {'user_id': userId, 'name': e.value, 'source': 'user', 'status': 'confirmed'},
     ];
     if (toAdd.isNotEmpty) await _db.from('allergies').insert(toAdd);
   }
@@ -109,7 +112,7 @@ class ProfileRepository {
   }
 
   Future<void> deleteHeartReading(String id) async {
-    await _db.from('wearable_samples').delete().eq('id', id);
+    await _db.from('wearable_samples').delete().eq('id', id).eq('user_id', _uid);
   }
 
   /// Saves readings from Apple Health or Health Connect. Duplicates are ignored,
@@ -167,10 +170,10 @@ class ProfileRepository {
   }
 
   Future<void> endPeriod(String id, DateTime end) async {
-    await _db.from('period_logs').update({'end_date': _ymd(end)}).eq('id', id);
+    await _db.from('period_logs').update({'end_date': _ymd(end)}).eq('id', id).eq('user_id', _uid);
   }
 
   Future<void> deletePeriod(String id) async {
-    await _db.from('period_logs').delete().eq('id', id);
+    await _db.from('period_logs').delete().eq('id', id).eq('user_id', _uid);
   }
 }
