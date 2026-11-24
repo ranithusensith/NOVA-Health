@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -187,7 +187,10 @@ def test_scan_still_works_if_the_safety_lookup_fails(client, db, monkeypatch):
     assert db.inserted == []
 
 
-@pytest.mark.parametrize("message, urgent", [("හුස්ම ගන්න බැහැ", True), ("How did I sleep?", False)])
+@pytest.mark.parametrize("message, urgent", [
+    ("හුස්ම ගන්න බැහැ", True), ("எனக்கு மூச்சு விட முடியவில்லை", True),
+    ("How did I sleep?", False), ("I was not suicidal", False),
+])
 def test_nova_only_preflight_never_calls_ai_or_checks_consent(client, db, monkeypatch, message, urgent):
     script_llm(monkeypatch, [])
     db.tables["ai_processing_consents"] = []
@@ -199,6 +202,55 @@ def test_nova_only_preflight_never_calls_ai_or_checks_consent(client, db, monkey
     reply = result.json()["data"]
     assert reply["emergency"] is urgent
     if urgent:
-        assert "දැන්ම 1990" in reply["reply"]
+        assert "1990" in reply["reply"]
     else:
         assert reply["reply"] == ""
+
+
+def test_reviewed_saved_symptom_bypasses_ai_consent_and_tool_selection(client, db, monkeypatch):
+    now = datetime(2026, 11, 25, 0, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    monkeypatch.setattr(tools, "utc_now", lambda: now)
+    monkeypatch.delenv("AI_PRIVACY_PROVIDER_APPROVAL")
+    script_llm(monkeypatch, [])
+    db.tables["ai_processing_consents"] = []
+    marker = "synthetic private annotation"
+    db.tables["symptom_logs"] = [
+        {"name": f"எனக்கு மூச்சு விட முடியவில்லை {marker}", "status": "active",
+         "started_at": (now - timedelta(hours=1)).isoformat()},
+    ]
+    response = post_chat(client, "Show my records", health_data=["logs"])
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    data = response.json()["data"]
+    assert data["emergency"] and data["sources"] == ["symptoms"]
+    assert "1990" in data["reply"] and "NOVA" in data["reply"] and marker not in response.text
+    assert [table for table, *_ in db.selects] == ["symptom_logs"]
+    assert not db.inserted
+
+
+@pytest.mark.parametrize(("status", "age", "text"), [
+    ("resolved", timedelta(minutes=5), "chest pain"),
+    ("active", timedelta(hours=25), "chest pain"),
+    ("active", timedelta(minutes=-5), "chest pain"),
+    ("active", timedelta(minutes=5), "no chest pain"),
+])
+def test_saved_symptoms_do_not_escalate_stale_nonactive_or_negated_entries(
+    client, db, monkeypatch, status, age, text,
+):
+    now = datetime(2026, 11, 25, tzinfo=timezone.utc)
+    monkeypatch.setattr(tools, "utc_now", lambda: now)
+    script_llm(monkeypatch, [])
+    db.tables["symptom_logs"] = [{"name": text, "status": status, "started_at": (now - age).isoformat()}]
+    response = client.post("/api/v1/assistant/chat", json={
+        "message": "Check my saved records", "reviewed": True, "emergency_only": True,
+        "health_data": ["logs"],
+    })
+    assert response.status_code == 200
+    assert response.json()["data"] == {"reply": "", "sources": [], "warnings": [], "emergency": False}
+
+
+def test_unshared_saved_symptoms_are_not_read(client, db, monkeypatch):
+    script_llm(monkeypatch, [])
+    response = client.post("/api/v1/assistant/chat", json={
+        "message": "Show my records", "emergency_only": True, "health_data": ["logs"],
+    })
+    assert response.status_code == 200 and not db.selects

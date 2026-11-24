@@ -35,6 +35,7 @@ import rules  # noqa: E402
 import safety  # noqa: E402
 import scan  # noqa: E402
 from eval import cases, metrics  # noqa: E402
+from eval.emergency_cases import CONTEXT_CASES  # noqa: E402
 from fakes import FakeDB  # noqa: E402
 
 SYNTHETIC_IMAGE_DIR = BACKEND.parent / "test-data"
@@ -200,6 +201,14 @@ def eval_safety():
     tp = sum(safety.detect_emergency(q) is not None for q in cases.EMERGENCY_YES)
     fp_list = [q for q in cases.EMERGENCY_NO if safety.detect_emergency(q) is not None]
     missed = [q for q in cases.EMERGENCY_YES if safety.detect_emergency(q) is None]
+    contextual = {}
+    for case, language, text, expected in CONTEXT_CASES:
+        result = contextual.setdefault(language, {"correct": 0, "total": 0, "mismatches": []})
+        result["total"] += 1
+        if safety.detect_emergency(text) == expected:
+            result["correct"] += 1
+        else:
+            result["mismatches"].append(case)
 
     rule_ok, rule_bad = 0, []
     for meds, allergies, conditions, expected in cases.RULE_CASES:
@@ -215,6 +224,7 @@ def eval_safety():
         "emergency_missed": missed,
         "emergency_false_alarms": f"{len(fp_list)}/{len(cases.EMERGENCY_NO)}",
         "false_alarm_examples": fp_list,
+        "emergency_context": contextual,
         "rules_correct": f"{rule_ok}/{len(cases.RULE_CASES)}",
         "rules_wrong": rule_bad,
     }
@@ -313,6 +323,10 @@ def markdown(results, args):
             L.append("- Missed emergencies: " + "; ".join(s["emergency_missed"]))
         if s["false_alarm_examples"]:
             L.append("- False alarms: " + "; ".join(s["false_alarm_examples"]))
+        for language, result in s["emergency_context"].items():
+            L.append(f"- Emergency context ({language}): **{result['correct']}/{result['total']}**")
+            if result["mismatches"]:
+                L.append("  - Mismatches: " + ", ".join(result["mismatches"]))
         for meds, al, co, exp, got in s["rules_wrong"]:
             L.append(f"- Rule mismatch: {meds} allergies={al} conditions={co} expected={exp} got={got}")
     s = results.get("agent", {}).get("summary")

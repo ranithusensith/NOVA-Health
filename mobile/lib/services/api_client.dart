@@ -224,7 +224,13 @@ class ApiClient {
       'message': message,
       'emergency_only': true,
     }, timeout: const Duration(seconds: 8));
-    return data['emergency'] == true ? data['reply'] as String : null;
+    final emergency = data['emergency'];
+    final reply = data['reply'];
+    if (emergency == false && reply == '') return null;
+    if (emergency == true && reply is String && reply.trim().isNotEmpty) {
+      return reply;
+    }
+    throw ApiException('NOVA could not check this message for an emergency.');
   }
 
   /// Sends a reviewed message and returns NOVA's reply and its source labels.
@@ -265,10 +271,11 @@ class ApiClient {
 }
 
 class AssistantReply {
-  const AssistantReply(this.text, {this.sources = const []});
+  const AssistantReply(this.text, {this.sources = const [], this.emergency = false});
 
   final String text;
   final List<String> sources;
+  final bool emergency;
 
   static const _sourceLabels = {
     'water': 'Water logs',
@@ -297,6 +304,7 @@ class AssistantReply {
     return AssistantReply(
       text is String ? text : '',
       sources: List.unmodifiable(sources),
+      emergency: data['emergency'] == true,
     );
   }
 }

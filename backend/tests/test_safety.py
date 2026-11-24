@@ -1,4 +1,7 @@
+import pytest
+
 import safety
+from eval.emergency_cases import CONTEXT_CASES
 
 
 def test_emergency_medical():
@@ -10,6 +13,34 @@ def test_emergency_medical():
 def test_emergency_self_harm_takes_priority():
     assert safety.detect_emergency("I want to die") == "self_harm"
     assert safety.detect_emergency("chest pain and I want to end my life") == "self_harm"
+
+
+@pytest.mark.parametrize("language,text,expected", [
+    pytest.param(language, text, expected, id=case)
+    for case, language, text, expected in CONTEXT_CASES
+])
+def test_guidance_based_emergency_context(language, text, expected):
+    kind = safety.detect_emergency(text)
+    assert kind == expected
+    if kind:
+        reply = safety.emergency_reply(kind, text=text)
+        assert "1990" in reply
+        if language == "ta":
+            assert "அழையுங்கள்" in reply
+        elif language == "si":
+            assert "අමතන්න" in reply
+
+
+@pytest.mark.parametrize("text", [
+    "Your readings mean you probably have diabetes.",
+    "Your test result proves nothing is wrong.",
+    "You can safely wait.",
+    "බය වෙන්න දෙයක් නැහැ.",
+    "மருந்தின் அளவை இரட்டிப்பாக்குங்கள்.",
+    "ஆம்புலன்ஸ் தேவையில்லை.",
+])
+def test_output_guard_discards_unsafe_assessment_or_instructions(text):
+    assert text not in safety.guard_output(text)
 
 
 def test_normal_questions_are_not_emergencies():

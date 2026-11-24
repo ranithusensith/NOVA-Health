@@ -202,12 +202,10 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
                     continue
                 seen.add(key)
                 result = await tools.run_tool(name, raw_args, db)
-                if name == "get_recent_logs" and args.get("kind") == "symptoms":
-                    today = tools.local_today().isoformat()
-                    active_today = [row for row in result["symptoms"] if row.get("since") == today]
-                    if urgent := safety.logged_emergency(active_today):
-                        kind, text = urgent
-                        return AgentResult(reply=safety.emergency_reply(kind, text=text), emergency=True)
+                if name == "get_recent_logs" and args.get("kind") == "symptoms" and result.get("urgent"):
+                    kind, text = result["urgent"]
+                    return AgentResult(reply=safety.saved_emergency_reply(kind, text=text),
+                                       emergency=True, sources=["symptoms"])
                 observations.append({"tool": name, "args": args, "result": _minimize_result(name, result, identifiers)})
                 text, verified = assistant_evidence.summarize(label, args, result)
                 if text:
