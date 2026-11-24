@@ -95,7 +95,7 @@ class HomeScreen extends StatelessWidget {
                   if (data.nextMedication != null)
                     _NextMedCard(data: data)
                   else if (data.medsToday > 0)
-                    _AllTakenCard(data: data)
+                    _DoseStatusCard(data: data)
                   else
                     const _NoMedsCard(),
                   const SizedBox(height: NovaSpace.gap),
@@ -357,25 +357,40 @@ class _NextMedCardState extends State<_NextMedCard> {
   bool _saving = false;
 
   Future<void> _take() async {
+    if (_saving) return;
     final med = widget.data.nextMedication!;
-    if (med.id == null) {
+    final occurrence = med.occurrence;
+    if (occurrence == null) {
       openMedications(context); // no reminder times yet: manage it there
       return;
     }
     setState(() => _saving = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await CareRepository.instance.logDose(med.id!);
+      final logId = await CareRepository.instance.logDose(occurrence);
+      if (!messenger.mounted) return;
       messenger
         ..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(
           behavior: SnackBarBehavior.floating,
-          content: Text('${med.name} marked as taken'),
-          action: SnackBarAction(label: 'Undo', onPressed: () => CareRepository.instance.undoLastDose(med.id!)),
+          content: Text(logId == null ? 'This dose was already logged' : '${med.name} marked as taken'),
+          action: logId == null
+              ? null
+              : SnackBarAction(label: 'Undo', onPressed: () async {
+                  try {
+                    await CareRepository.instance.undoDose(occurrence, logId);
+                  } catch (e) {
+                    if (messenger.mounted) {
+                      messenger.showSnackBar(SnackBar(content: Text(friendlyError(e))));
+                    }
+                  }
+                }),
         ));
     } catch (e) {
       debugPrint('logDose failed: $e');
-      messenger.showSnackBar(SnackBar(behavior: SnackBarBehavior.floating, content: Text(friendlyError(e))));
+      if (messenger.mounted) {
+        messenger.showSnackBar(SnackBar(behavior: SnackBarBehavior.floating, content: Text(friendlyError(e))));
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -386,7 +401,7 @@ class _NextMedCardState extends State<_NextMedCard> {
     final c = context.nova;
     final med = widget.data.nextMedication!;
     final taken = widget.data.medsTakenToday;
-    final when = med.id == null ? med.time : (med.overdue ? 'Missed · ${med.time}' : 'Next dose · ${med.time}');
+    final when = med.occurrence == null ? med.time : (med.overdue ? 'Missed · ${med.time}' : 'Next dose · ${med.time}');
     return Pressable(
       onTap: () => openMedications(context),
       semanticLabel: '${med.name} ${med.dose}, $when. Open medications',
@@ -417,7 +432,7 @@ class _NextMedCardState extends State<_NextMedCard> {
             ),
             const SizedBox(height: 12),
             NovaButton(
-              label: _saving ? 'Saving…' : (med.id == null ? 'Set reminder times' : 'Mark as taken'),
+              label: _saving ? 'Saving…' : (med.occurrence == null ? 'Manage medication' : 'Mark as taken'),
               onPressed: _saving ? null : _take,
             ),
           ],
@@ -427,27 +442,34 @@ class _NextMedCardState extends State<_NextMedCard> {
   }
 }
 
-class _AllTakenCard extends StatelessWidget {
-  const _AllTakenCard({required this.data});
+class _DoseStatusCard extends StatelessWidget {
+  const _DoseStatusCard({required this.data});
   final HealthSnapshot data;
 
   @override
   Widget build(BuildContext context) {
     final c = context.nova;
+    final allTaken = data.medsTakenToday == data.medsToday;
+    final title = allTaken ? 'All doses taken' : 'Some doses could not be verified';
+    final color = allTaken ? c.success : c.warning;
     return Pressable(
       onTap: () => openMedications(context),
-      semanticLabel: 'All ${data.medsToday} doses taken today. Open medications',
+      semanticLabel: '$title. Open medications',
       child: NovaCard(
         child: Row(
           children: [
-            IconBadge(icon: CupertinoIcons.checkmark_alt, background: c.success.withValues(alpha: 0.15), foreground: c.success),
+            IconBadge(
+              icon: allTaken ? CupertinoIcons.checkmark_alt : CupertinoIcons.info_circle,
+              background: color.withValues(alpha: 0.15),
+              foreground: color,
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('All doses taken', style: NovaType.headline.copyWith(color: c.textPrimary)),
-                  Text('${data.medsTakenToday} of ${data.medsToday} today. Nice work.',
+                  Text(title, style: NovaType.headline.copyWith(color: c.textPrimary)),
+                  Text(allTaken ? '${data.medsTakenToday} of ${data.medsToday} today. Nice work.' : 'Check Medications for details.',
                       style: NovaType.subhead.copyWith(color: c.textSecondary)),
                 ],
               ),

@@ -6,11 +6,29 @@ from fastapi.testclient import TestClient
 
 import llm
 import main
+import reports
 import scan
 import tools
 from fakes import FakeDB, enable_test_ai, post_reviewed_text, script_llm
 
 REPORT_TEXT = "WBC 7400 /uL reference 4000 - 11000"
+
+def test_daily_report_filters_by_schedule_and_separates_unassigned_doses():
+    db = FakeDB({
+        "medications": [{"name": "Synthetic", "times": ["08:00", "21:00"]}],
+        "medication_logs": [
+            {"status": "taken", "occurrence_key": "daily:1793566800000000"},
+            {"status": "taken", "occurrence_key": None},
+            {"status": "skipped", "occurrence_key": None},
+        ],
+    })
+    data = asyncio.run(reports.build_daily_data(db, date(2026, 11, 1)))
+    assert (data["doses_taken"], data["doses_scheduled"], data["unassigned_dose_logs"]) == (1, 2, 1)
+    _, _, filters = next(query for query in db.selects if query[0] == "medication_logs")
+    assert "scheduled_local_at.gte.2026-11-01T00:00:00" in filters["or"]
+    assert "scheduled_local_at.is.null,scheduled_at.gte." in filters["or"]
+    assert "scheduled_at.is.null,taken_at.gte." in filters["or"]
+    assert "Medicines: 1 dose log(s) without a scheduled time" in reports.highlights(data)
 
 
 # ------------------------------------------------------------ parsing and flags

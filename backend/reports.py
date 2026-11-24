@@ -2,7 +2,7 @@
 Daily health report computed and written entirely within NOVA.
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 import safety
 import tools
@@ -18,6 +18,34 @@ async def _day_rows(db, table: str, cols: str, ts: str, day: date, extra: dict |
     return await db.select(table, cols, filters=filters, order=f"{ts}.asc", limit=500)
 
 
+async def _day_doses(db, day: date) -> tuple[int, int]:
+    start, end = tools.day_bounds_utc(day)
+    wall_start = f"{day}T00:00:00"
+    wall_end = f"{day + timedelta(days=1)}T00:00:00"
+    filters = {
+        "status": "eq.taken",
+        "or": (
+            f"(and(scheduled_local_at.gte.{wall_start},scheduled_local_at.lt.{wall_end}),"
+            f"and(scheduled_local_at.is.null,scheduled_at.gte.{start},scheduled_at.lt.{end}),"
+            f"and(scheduled_at.is.null,taken_at.gte.{start},taken_at.lt.{end}))"
+        ),
+    }
+    taken = unassigned = 0
+    page_size = 250
+    while True:
+        rows = await db.select("medication_logs", "id,status,occurrence_key",
+                               filters=filters, order="id.asc", limit=page_size)
+        for row in rows:
+            if row.get("status") == "taken":
+                if row.get("occurrence_key") is None:
+                    unassigned += 1
+                else:
+                    taken += 1
+        if len(rows) < page_size:
+            return taken, unassigned
+        filters["id"] = f"gt.{rows[-1]['id']}"
+
+
 async def build_daily_data(db, day: date) -> dict:
     water = await _day_rows(db, "water_logs", "amount_ml,logged_at", "logged_at", day)
     sleep = await _day_rows(db, "sleep_logs", "hours,logged_at", "logged_at", day)
@@ -25,7 +53,7 @@ async def build_daily_data(db, day: date) -> dict:
     meals = await _day_rows(db, "meal_logs", "calories,logged_at", "logged_at", day)
     heart = await _day_rows(db, "wearable_samples", "value,recorded_at,context", "recorded_at", day,
                             {"metric": "eq.heart_rate"})
-    taken = await _day_rows(db, "medication_logs", "status,taken_at", "taken_at", day)
+    taken, unassigned = await _day_doses(db, day)
     meds = (await tools.get_medications(db, {}, day=day))["medications"]
 
     scheduled = sum(tools.scheduled_doses_on(m, day) for m in meds)
@@ -40,7 +68,8 @@ async def build_daily_data(db, day: date) -> dict:
         "calories": sum(int(r.get("calories") or 0) for r in meals),
         "heart": tools.summarize_heart(heart),
         "doses_scheduled": scheduled,
-        "doses_taken": sum(1 for r in taken if r.get("status") == "taken"),
+        "doses_taken": taken,
+        "unassigned_dose_logs": unassigned,
     }
 
 
@@ -60,6 +89,8 @@ def highlights(d: dict) -> list[str]:
         out.append(f"Heart rate: average {h['average_bpm']} bpm (range {h['min_bpm']} to {h['max_bpm']})")
     if d["doses_scheduled"]:
         out.append(f"Medicines: {d['doses_taken']} of {d['doses_scheduled']} doses marked taken")
+    if d["unassigned_dose_logs"]:
+        out.append(f"Medicines: {d['unassigned_dose_logs']} dose log(s) without a scheduled time")
     return out
 
 
@@ -71,7 +102,7 @@ def tips(d: dict) -> list[str]:
         out.append("Try to go to bed a little earlier tonight.")
     if d["sleep_hours"] is None:
         out.append("Log last night's sleep so NOVA can spot patterns.")
-    if d["doses_scheduled"] and d["doses_taken"] < d["doses_scheduled"]:
+    if not d["unassigned_dose_logs"] and d["doses_scheduled"] and d["doses_taken"] < d["doses_scheduled"]:
         out.append("Check your medicines in the app and mark the ones you took.")
     if any(m in ("low", "bad") for m in d["moods"]):
         out.append("If you feel low for several days, talk to someone you trust or a doctor.")

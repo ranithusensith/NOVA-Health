@@ -1,12 +1,13 @@
+import 'care_models.dart';
+
 /// Sample data only — fictional persona Maya Perera, 28. No real personal data.
 class Medication {
-  const Medication({required this.name, required this.dose, required this.time, this.id, this.overdue = false});
+  const Medication({required this.name, required this.dose, required this.time, this.occurrence, this.overdue = false});
   final String name;
   final String dose;
   final String time;
 
-  /// medications.id, so "Mark as taken" can write a medication_logs row.
-  final String? id;
+  final DoseOccurrence? occurrence;
 
   /// True when this dose's time has passed and it was not taken yet.
   final bool overdue;
@@ -112,4 +113,12 @@ String formatMinutes(int m) => m % 60 == 0 ? '${m ~/ 60}h' : '${m ~/ 60}h ${m % 
 String formatClock(DateTime d) {
   final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
   return '$h:${d.minute.toString().padLeft(2, '0')} ${d.hour < 12 ? 'AM' : 'PM'}';
+}
+
+String formatDoseClock(DoseSlot slot) {
+  final clock = formatClock(slot.at);
+  if (slot.occurrence.scheduledLocalAt != null) return clock;
+  final offset = slot.at.timeZoneOffset.inMinutes;
+  final minutes = offset.abs();
+  return '$clock UTC${offset < 0 ? '-' : '+'}${clockString(minutes ~/ 60, minutes % 60)}';
 }

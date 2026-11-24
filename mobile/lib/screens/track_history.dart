@@ -116,8 +116,11 @@ class _TrackHistoryState extends State<TrackHistory> {
           Row(children: [
             tile(Icons.mood_rounded, c.warning, 'Mood', d.moodLevel == null ? '—' : moods[d.moodLevel!]),
             const SizedBox(width: 10),
-            tile(Icons.medication_rounded, c.primary, 'Doses',
-                d.dosesScheduled == 0 ? '—' : '${d.dosesTaken} of ${d.dosesScheduled}'),
+            tile(
+              Icons.medication_rounded, c.primary, 'Doses',
+              d.unassignedDoseLogs > 0 ? '${d.unassignedDoseLogs} unassigned'
+                  : (d.dosesScheduled == 0 ? '—' : '${d.dosesTaken} of ${d.dosesScheduled}'),
+            ),
           ]),
         ],
       ),

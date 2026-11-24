@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -28,7 +30,7 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   static const _tabs = [
     NovaTab('Home', CupertinoIcons.house, CupertinoIcons.house_fill),
     NovaTab('Track', CupertinoIcons.chart_bar, CupertinoIcons.chart_bar_fill),
@@ -41,22 +43,49 @@ class _AppShellState extends State<AppShell> {
   HealthSnapshot _snapshot = _loadingSnapshot;
   bool _loading = true;
   String? _error;
+  int _loadVersion = 0;
+  late final Timer _doseCalendarTimer;
+  late ({String day, Duration offset}) _doseDay;
+
+  ({String day, Duration offset}) _localDoseDay() {
+    final now = DateTime.now();
+    return (day: ymd(now), offset: now.timeZoneOffset);
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     HealthRepository.changes.addListener(_load);
+    _doseDay = _localDoseDay();
+    _doseCalendarTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      final current = _localDoseDay();
+      if (current == _doseDay) return;
+      _doseDay = current;
+      HealthRepository.notifyChanged();
+    });
     _load();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _doseCalendarTimer.cancel();
     HealthRepository.changes.removeListener(_load);
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _doseDay = _localDoseDay();
+      _load();
+    }
+  }
+
   /// Reloads today's data from Supabase (called after every log).
   Future<void> _load() async {
+    final version = ++_loadVersion;
     final prefs = AppPrefs.instance;
     try {
       var data = await HealthRepository.instance.loadToday();
@@ -75,10 +104,10 @@ class _AppShellState extends State<AppShell> {
             nextMedication: next == null
                 ? null
                 : Medication(
-                    id: next.medication.id,
+                    occurrence: next.occurrence,
                     name: next.medication.name,
                     dose: next.medication.dosage ?? '',
-                    time: formatClock(next.at),
+                    time: formatDoseClock(next),
                     overdue: next.state == DoseState.missed,
                   ),
             clearNextMedication: next == null,
@@ -87,7 +116,7 @@ class _AppShellState extends State<AppShell> {
       } catch (e) {
         debugPrint('Could not load today\'s doses: $e');
       }
-      if (mounted) {
+      if (mounted && version == _loadVersion) {
         setState(() {
           _snapshot = data;
           _loading = false;
@@ -96,7 +125,7 @@ class _AppShellState extends State<AppShell> {
       }
     } catch (e) {
       debugPrint('Could not load today\'s data: $e');
-      if (mounted) {
+      if (mounted && version == _loadVersion) {
         setState(() {
           _loading = false;
           _error = friendlyError(e);

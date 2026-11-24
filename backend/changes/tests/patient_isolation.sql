@@ -8,7 +8,7 @@ values ('00000000-0000-0000-0000-000000000104',
         '00000000-0000-0000-0000-000000000004', 'Synthetic parent', '{}');
 
 create temp table patient_cases (
-  table_name text, owner_column text, key_column text, allowed text[], samples jsonb
+  table_name text, owner_column text, key_column text, allowed text[], samples jsonb, insert_columns text
 );
 insert into patient_cases (table_name, owner_column, key_column, allowed) values
   ('profiles', 'id', 'id', '{select,update}'),
@@ -36,14 +36,18 @@ declare
   row_a jsonb;
   row_b jsonb;
   operation text;
+  writable_columns text;
 begin
   if to_regclass('public.chat_messages') is not null then
     insert into public.chat_messages (user_id, content)
     values (subject_a, 'H2 chat A'), (subject_b, 'H2 chat B');
-    insert into patient_cases values ('chat_messages', 'user_id', null, '{}', null);
+    insert into patient_cases (table_name, owner_column, allowed) values ('chat_messages', 'user_id', '{}');
   end if;
   for spec in select * from patient_cases loop
     target := format('public.%I', spec.table_name)::regclass;
+    select string_agg(quote_ident(attname), ', ' order by attnum) into writable_columns
+      from pg_attribute
+      where attrelid = target and attnum > 0 and not attisdropped and attgenerated = '';
     if not exists (select from pg_class where oid = target and relrowsecurity)
        or not exists (
          select from pg_policy where polrelid = target and polname = 'nova_account_boundary'
@@ -80,13 +84,15 @@ begin
       if spec.table_name = 'medication_logs' then
         row_b := row_b || '{"medication_id":"00000000-0000-0000-0000-000000000104"}';
       end if;
-      execute format('insert into %s select * from jsonb_populate_record(null::%s, $1)', target, target)
+      execute format('insert into %s (%s) select %s from jsonb_populate_record(null::%s, $1)',
+                     target, writable_columns, writable_columns, target)
         using row_b;
     end if;
     if row_a is null or row_b is null then
       raise exception 'Missing two-owner fixture for %', target;
     end if;
-    update patient_cases set samples = jsonb_build_array(row_a, row_b) where table_name = spec.table_name;
+    update patient_cases c set samples = jsonb_build_array(row_a, row_b), insert_columns = writable_columns
+      where c.table_name = spec.table_name;
   end loop;
 end
 $$;
@@ -160,7 +166,8 @@ begin
         if count_rows < 1 then raise exception 'Owner cannot read %', target; end if;
       end if;
 
-      statement := format('insert into %s select * from jsonb_populate_record(null::%s, $1)', target, target);
+      statement := format('insert into %s (%s) select %s from jsonb_populate_record(null::%s, $1)',
+                          target, spec.insert_columns, spec.insert_columns, target);
       begin
         execute statement using foreign_row;
         raise exception 'Cross-owner insert succeeded on %', target;

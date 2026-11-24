@@ -99,7 +99,7 @@ void main() {
         'reminders_enabled': false,
       };
       final medicine = MedicationRecord.fromJson(row);
-      expect(buildSchedule([medicine], {}, now).single.at, DateTime(2026, 10, 25, 8, 10));
+      expect(buildSchedule([medicine], {}, now, accountId: 'owner').single.at, DateTime(2026, 10, 25, 8, 10));
       expect(medicine.dosesOn(DateTime(2026, 10, 26)), isEmpty);
       expect(buildReminderPlan([row], now), isEmpty);
     }

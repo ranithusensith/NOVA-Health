@@ -40,7 +40,7 @@ List<ReminderPlan> buildReminderPlan(
   final repeats = <String, bool>{};
 
   void add(DateTime at, bool daily, String label) {
-    final key = '${daily ? 'd' : 'o'}|${at.toIso8601String()}';
+    final key = '${daily ? 'd' : 'o'}|${at.toUtc().toIso8601String()}';
     final list = groups.putIfAbsent(key, () => []);
     if (!list.contains(label)) list.add(label);
     times[key] = at;
