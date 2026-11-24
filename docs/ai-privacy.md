@@ -7,7 +7,9 @@ NOVA uses Google Gemini to select assistant tools and create scan drafts when th
 - A reviewed assistant question and, if selected, up to four earlier user questions from the same open conversation. The default sends only the current question. The user may select record categories for that reply. The assistant only has tools for those categories, and their outbound projections omit account IDs, exact log timestamps, cycle start dates, medication schedules, and lab report dates. Local medication safety rules add their full notes only to NOVA’s response.
 - Reviewed clinical text from a prescription or lab report. NOVA’s server runs Tesseract and proposes text with common identifier fields removed. The user can remove residual identifiers, correct errors or enter clinical text manually. The API redacts the reviewed text again. No original medical photo or medical photo metadata goes to Gemini.
 - A food photo explicitly reviewed by the user. The backend renders the pixels into a new bounded JPEG. NOVA also uses local OCR to reject recognizable identifying text. Faces, documents, and identifiers missed by OCR can remain visible in the pixels. The review asks the user to cancel if any are visible.
-- Red-flag chat handling, daily reports, medication safety review and medication confirmation run inside NOVA. Manual entries and edits require no Gemini consent.
+- Red-flag chat handling, symptom draft checks, daily reports, medication safety review and medication confirmation run inside NOVA. Manual entries and edits require no Gemini consent.
+
+When tracking logs are selected, the assistant provider can receive a bounded symptom count and recorded severity/status values. NOVA displays the account's documented symptom labels and local onset dates from its own evidence. Stored symptom names, notes and onset dates stay out of the tool payload to Gemini. Text the user types directly into a reviewed chat question follows the normal chat disclosure.
 
 ## Storage and deployment
 

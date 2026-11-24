@@ -172,6 +172,7 @@ The error envelope contains a fixed code and a patient-safe message. Upstream re
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/assistant/chat` | Send a reviewed question to Gemini after opt-in |
+| POST | `/symptoms/check` | Check an authenticated, unsaved symptom draft using NOVA’s local red-flag rules |
 | GET | `/privacy/ai` | Read provider availability, disclosure version and current account consent |
 | POST | `/privacy/ai` | Enable with the current disclosure version, or revoke consent |
 | DELETE | `/privacy/ai/chats` | Delete the signed-in account’s legacy NOVA chat rows |
@@ -179,6 +180,8 @@ The error envelope contains a fixed code and a patient-safe message. Upstream re
 | GET | `/insights?range=week` | Get long-term insights |
 
 Supply both midnight UTC offsets when requesting a device-local date. The response marks the calendar basis as `device` or `configured`. When chat selects tracking logs or heart-rate records, the app can send `local_calendar` with the local `today` date and 31 ordered `midnight_offsets` from 29 days before today through tomorrow. These values are used only within NOVA.
+
+The symptom check accepts `name`, optional `notes`, an offset-aware `started_at` and a `status` of `active` or `resolved`. It returns `emergency` and fixed `reply` text if current red flags match. The endpoint uses no provider and makes no database writes. Flutter manages symptom records through the owner-scoped Supabase table.
 
 ### 5.9 Notifications and Emergency
 

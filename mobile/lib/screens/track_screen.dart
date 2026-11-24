@@ -10,6 +10,7 @@ import '../widgets/content.dart';
 import '../widgets/mood_face.dart';
 import '../widgets/pressable.dart';
 import 'medications_screen.dart';
+import 'symptoms_screen.dart';
 import 'track_history.dart';
 
 /// Track tab: log water, sleep and mood. Saves to Supabase, then asks the
@@ -108,6 +109,20 @@ class _TrackScreenState extends State<TrackScreen> {
                     Text("Today's doses, add or stop a medicine", style: NovaType.footnote.copyWith(color: c.textSecondary)),
                   ]),
                 ),
+                Icon(CupertinoIcons.chevron_right, size: 18, color: c.textSecondary),
+              ]),
+            ),
+          ),
+          const SizedBox(height: NovaSpace.gap),
+
+          Pressable(
+            onTap: () => openSymptoms(context),
+            semanticLabel: 'Symptoms. Log or review symptoms',
+            child: NovaCard(
+              child: Row(children: [
+                const IconBadge(icon: Icons.monitor_heart_outlined, size: 40),
+                const SizedBox(width: 12),
+                Expanded(child: Text('Symptoms', style: NovaType.headline.copyWith(color: c.textPrimary))),
                 Icon(CupertinoIcons.chevron_right, size: 18, color: c.textSecondary),
               ]),
             ),

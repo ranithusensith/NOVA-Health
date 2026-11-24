@@ -5,6 +5,9 @@ import re
 from collections import defaultdict
 from datetime import date
 
+import safety
+import symptoms
+
 
 NO_EVIDENCE = (
     "I could not verify any personal health information for this question. "
@@ -104,6 +107,13 @@ def summarize(source, args, result):
         text = _measured(result, field, f"{label} ({period}), average per logged day", unit)
         if text:
             return text, True
+    if source == "symptoms" and result.get("symptoms"):
+        lines = []
+        for row in result["symptoms"][:5]:
+            day = row.get("since") or "onset date unknown"
+            line = f"{day}: {symptoms.description(row)}"
+            lines.append(safety.guard_output(line, limit=None))
+        return "Saved symptom entries:\n" + "\n".join(lines), True
     if source == "heart rate":
         window = args["days"]
         period = "today" if window == 1 else f"last {window} calendar days, including today"
