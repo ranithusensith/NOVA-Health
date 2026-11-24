@@ -7,6 +7,7 @@ Design rules
 - Only reviewed, redacted clinical text is sent for medical document scans.
 """
 
+import math
 import re
 from datetime import date
 import json
@@ -106,10 +107,10 @@ class PrescriptionResult(BaseModel):
 class FoodResult(BaseModel):
     is_food: bool = False
     description: str = Field(default="", max_length=160)
-    calories: int = Field(default=0, ge=0, le=5000)
-    protein_g: float = Field(default=0, ge=0, le=500)
-    carbs_g: float = Field(default=0, ge=0, le=800)
-    fat_g: float = Field(default=0, ge=0, le=500)
+    calories: int | None = Field(default=None, ge=0, le=5000)
+    protein_g: float | None = Field(default=None, ge=0, le=500)
+    carbs_g: float | None = Field(default=None, ge=0, le=800)
+    fat_g: float | None = Field(default=None, ge=0, le=500)
     confidence: float = 0.0
 
 
@@ -185,17 +186,26 @@ def parse_prescription(raw: dict, identifiers=()) -> PrescriptionResult:
 
 
 def parse_food(raw: dict) -> FoodResult:
-    def bounded(v, hi):
-        return max(0.0, min(hi, _to_float(v)))
+    def bounded(value, limit, digits=None):
+        if type(value) not in (str, int, float):
+            return None
+        try:
+            value = float(value)
+        except (ValueError, OverflowError):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+        value = min(limit, value)
+        return int(value) if digits is None else round(value, digits)
 
     description = raw.get("description")
     return FoodResult(
         is_food=raw.get("is_food") is True,
         description=safety.redact(description).strip()[:160] if isinstance(description, str) else "",
-        calories=int(bounded(raw.get("calories"), 5000)),
-        protein_g=round(bounded(raw.get("protein_g"), 500), 1),
-        carbs_g=round(bounded(raw.get("carbs_g"), 800), 1),
-        fat_g=round(bounded(raw.get("fat_g"), 500), 1),
+        calories=bounded(raw.get("calories"), 5000),
+        protein_g=bounded(raw.get("protein_g"), 500, 1),
+        carbs_g=bounded(raw.get("carbs_g"), 800, 1),
+        fat_g=bounded(raw.get("fat_g"), 500, 1),
         confidence=_clamp_confidence(raw.get("confidence")),
     )
 

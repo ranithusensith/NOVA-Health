@@ -268,7 +268,7 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
 
   Widget _trendCard(NovaColors c, List<HeartReading> readings) {
     final today = dayOf(DateTime.now());
-    final days = [for (var i = 6; i >= 0; i--) today.subtract(Duration(days: i))];
+    final days = [for (var i = 6; i >= 0; i--) calendarDay(today, -i)];
     final values = <double?>[];
     for (final day in days) {
       final list = [for (final r in readings) if (dayOf(r.at) == day) r.bpm];

@@ -15,9 +15,9 @@ class SleepBarChart extends StatelessWidget {
     this.unit = 'hours',
   });
 
-  final List<double> values;
+  final List<double?> values;
   final List<String> labels;
-  final double goal;
+  final double? goal;
   final Color color;
   final double height;
 
@@ -28,9 +28,9 @@ class SleepBarChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.nova;
-    final desc = [for (var i = 0; i < values.length; i++) '${labels[i]} ${values[i]} $unit'].join(', ');
+    final desc = [for (var i = 0; i < values.length; i++) '${labels[i]} ${values[i] == null ? 'unknown' : '${values[i]} $unit'}'].join(', ');
     return Semantics(
-      label: '$semanticTitle: $desc. Goal $goal $unit.',
+      label: '$semanticTitle: $desc.${goal == null ? '' : ' Goal $goal $unit.'}',
       excludeSemantics: true,
       child: Column(
         children: [
@@ -62,8 +62,8 @@ class SleepBarChart extends StatelessWidget {
 class _BarsPainter extends CustomPainter {
   _BarsPainter(this.values, this.goal, this.color);
 
-  final List<double> values;
-  final double goal;
+  final List<double?> values;
+  final double? goal;
   final Color color;
 
   @override
@@ -71,18 +71,22 @@ class _BarsPainter extends CustomPainter {
     const barW = 22.0;
     const inset = 6.0;
     final n = values.length;
-    final peak = values.fold<double>(goal, (m, v) => v > m ? v : m);
+    final peak = values.whereType<double>().fold<double>(goal ?? 0, (m, v) => v > m ? v : m);
     final maxV = (peak <= 0 ? 1 : peak) * 1.08;
     final spacing = n > 1 ? (size.width - inset * 2 - n * barW) / (n - 1) : 0.0;
 
     for (var i = 0; i < n; i++) {
-      final h = (values[i] / maxV) * size.height;
+      final value = values[i];
+      if (value == null) continue;
+      final h = (value / maxV) * size.height;
       final x = inset + i * (barW + spacing);
       final rect = RRect.fromRectAndRadius(Rect.fromLTWH(x, size.height - h, barW, h), const Radius.circular(6));
       canvas.drawRRect(rect, Paint()..color = color.withValues(alpha: i == n - 1 ? 1 : 0.55));
     }
 
-    final y = size.height - (goal / maxV) * size.height;
+    final target = goal;
+    if (target == null) return;
+    final y = size.height - (target / maxV) * size.height;
     final dash = Paint()
       ..color = color.withValues(alpha: 0.7)
       ..strokeWidth = 1.5;
@@ -92,5 +96,5 @@ class _BarsPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_BarsPainter old) => old.values != values || old.color != color;
+  bool shouldRepaint(_BarsPainter old) => old.values != values || old.goal != goal || old.color != color;
 }

@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/app_prefs.dart';
 import '../data/care_repository.dart';
+import '../data/daily_metrics.dart';
 import '../data/health_repository.dart';
 import '../data/profile_models.dart';
 import '../data/profile_repository.dart';
@@ -36,12 +37,77 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String? _name;
   HealthProfile? _health;
   int _allergyCount = 0;
+  DailyGoals? _goals;
+  bool _goalError = false;
+  bool _savingGoal = false;
 
   @override
   void initState() {
     super.initState();
     _loadName();
     _loadHealth();
+    _loadGoals();
+  }
+
+  Future<void> _loadGoals() async {
+    try {
+      final goals = await HealthRepository.instance.loadDailyGoals();
+      if (mounted) {
+        setState(() {
+          _goals = goals;
+          _goalError = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _goalError = true);
+    }
+  }
+
+  Future<void> _editGoal({required bool water}) async {
+    final account = Supabase.instance.client.auth.currentUser?.id;
+    if (account == null || _savingGoal) return;
+    final initial = water ? _goals?.waterMl : _goals?.sleepHours;
+    var text = initial?.toString() ?? '';
+    final edited = await showCupertinoDialog<String>(
+      context: context,
+      builder: (context) => CupertinoAlertDialog(
+        title: Text(water ? 'Water tracking target (mL)' : 'Sleep tracking goal (hours)'),
+        content: Column(
+          children: [
+            Text(water
+                ? 'Use your care team’s instructions if they gave you a fluid limit. Leave blank to clear.'
+                : 'Leave blank to clear.'),
+            const SizedBox(height: 8),
+            CupertinoTextFormFieldRow(
+              initialValue: text,
+              placeholder: 'Optional',
+              keyboardType: TextInputType.numberWithOptions(decimal: !water),
+              onChanged: (value) => text = value.trim(),
+            ),
+          ],
+        ),
+        actions: [
+          CupertinoDialogAction(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(context, text), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (edited == null || !mounted) return;
+    final num? number = water ? int.tryParse(edited) : double.tryParse(edited);
+    if (edited.isNotEmpty && (number == null || !number.isFinite ||
+        number < (water ? 1 : 0.1) || number > (water ? 20000 : 24))) {
+      showNovaToast(context, water ? 'Enter a whole number of millilitres.' : 'Enter hours between 0.1 and 24.');
+      return;
+    }
+    setState(() => _savingGoal = true);
+    try {
+      final goals = await HealthRepository.instance.saveDailyGoal(accountId: account, water: water, value: number);
+      if (mounted) setState(() => _goals = goals);
+    } catch (e) {
+      if (mounted) showNovaToast(context, friendlyError(e));
+    } finally {
+      if (mounted) setState(() => _savingGoal = false);
+    }
   }
 
   Future<void> _loadHealth() async {
@@ -257,38 +323,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
               // ---------------- Goals
               const SectionLabel('Daily goals'),
-              NovaCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _GoalSlider(
-                      icon: Icons.water_drop_outlined,
-                      color: c.water,
-                      label: 'Water',
-                      valueLabel: '${(prefs.waterGoalMl / 1000).toStringAsFixed(prefs.waterGoalMl % 1000 == 0 ? 0 : 1)} L',
-                      value: prefs.waterGoalMl.toDouble(),
-                      min: 1000,
-                      max: 4000,
-                      divisions: 12,
-                      onChanged: (v) => prefs.setWaterGoalMl(v.round()),
-                      onChangeEnd: (_) => HealthRepository.notifyChanged(),
-                    ),
-                    const SizedBox(height: 8),
-                    _GoalSlider(
-                      icon: Icons.bedtime_outlined,
-                      color: c.sleep,
-                      label: 'Sleep',
-                      valueLabel: '${prefs.sleepGoalHours.toStringAsFixed(prefs.sleepGoalHours % 1 == 0 ? 0 : 1)} h',
-                      value: prefs.sleepGoalHours,
-                      min: 5,
-                      max: 10,
-                      divisions: 10,
-                      onChanged: prefs.setSleepGoalHours,
-                      onChangeEnd: (_) => HealthRepository.notifyChanged(),
-                    ),
-                  ],
-                ),
-              ),
+              if (_goals == null)
+                if (_goalError)
+                  ErrorCard(message: 'Could not load your tracking goals.', onRetry: _loadGoals)
+                else
+                  const SkeletonCard(lines: 2)
+              else
+                _Group(children: [
+                  _NavRow(
+                    icon: Icons.water_drop_outlined,
+                    color: c.water,
+                    title: 'Water tracking target',
+                    trailing: _goals!.waterMl == null ? 'Not set' : '${_goals!.waterMl} mL',
+                    onTap: () => _editGoal(water: true),
+                  ),
+                  _NavRow(
+                    icon: Icons.bedtime_outlined,
+                    color: c.sleep,
+                    title: 'Sleep tracking goal',
+                    trailing: _goals!.sleepHours == null ? 'Not set' : '${_goals!.sleepHours} h',
+                    onTap: () => _editGoal(water: false),
+                  ),
+                ]),
 
               // ---------------- Appearance
               const SectionLabel('Appearance'),
@@ -453,60 +509,6 @@ class _NavRow extends StatelessWidget {
     );
   }
 }
-
-class _GoalSlider extends StatelessWidget {
-  const _GoalSlider({
-    required this.icon,
-    required this.color,
-    required this.label,
-    required this.valueLabel,
-    required this.value,
-    required this.min,
-    required this.max,
-    required this.divisions,
-    required this.onChanged,
-    this.onChangeEnd,
-  });
-
-  final IconData icon;
-  final Color color;
-  final String label;
-  final String valueLabel;
-  final double value;
-  final double min;
-  final double max;
-  final int divisions;
-  final ValueChanged<double> onChanged;
-  final ValueChanged<double>? onChangeEnd;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.nova;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 8),
-          Expanded(child: Text(label, style: NovaType.headline.copyWith(color: c.textPrimary))),
-          Text(valueLabel, style: NovaType.number(20).copyWith(color: c.textPrimary)),
-        ]),
-        Slider(
-          value: value.clamp(min, max),
-          min: min,
-          max: max,
-          divisions: divisions,
-          label: valueLabel,
-          activeColor: color,
-          semanticFormatterCallback: (_) => '$label goal $valueLabel',
-          onChanged: onChanged,
-          onChangeEnd: onChangeEnd,
-        ),
-      ],
-    );
-  }
-}
-
 
 /// Profile-tab summary of the health profile. Tap to view or edit everything.
 class _HealthSummaryCard extends StatelessWidget {

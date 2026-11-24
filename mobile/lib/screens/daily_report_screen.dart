@@ -2,9 +2,9 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../data/app_prefs.dart';
 import '../data/care_models.dart';
 import '../data/care_repository.dart';
+import '../data/daily_metrics.dart';
 import '../data/sample_data.dart';
 import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
@@ -60,7 +60,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
   }
 
   void _go(int deltaDays) {
-    final next = _day.add(Duration(days: deltaDays));
+    final next = calendarDay(_day, deltaDays);
     if (next.isAfter(dayOf(DateTime.now()))) return;
     setState(() {
       _day = next;
@@ -71,40 +71,8 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
   String _dayTitle() {
     final today = dayOf(DateTime.now());
     if (_day == today) return 'Today';
-    if (_day == today.subtract(const Duration(days: 1))) return 'Yesterday';
+    if (_day == calendarDay(today, -1)) return 'Yesterday';
     return formatToday(_day);
-  }
-
-  /// 0–100 day score: equal parts water, sleep, medication adherence (and mood when logged).
-  int _score(DayStats s) {
-    final prefs = AppPrefs.instance;
-    final parts = <double>[
-      (s.waterMl / prefs.waterGoalMl).clamp(0.0, 1.0),
-      ((s.sleepHours ?? 0) / prefs.sleepGoalHours).clamp(0.0, 1.0),
-      if (s.dosesScheduled > 0 && s.unassignedDoseLogs == 0)
-        (s.dosesTaken / s.dosesScheduled).clamp(0.0, 1.0),
-      if (s.moodLevel != null) s.moodLevel! / 4,
-    ];
-    return (parts.reduce((a, b) => a + b) / parts.length * 100).round();
-  }
-
-  List<String> _suggestions(DayStats s) {
-    final prefs = AppPrefs.instance;
-    final out = <String>[];
-    if (s.waterMl < prefs.waterGoalMl) {
-      out.add('Drink about ${((prefs.waterGoalMl - s.waterMl) / 250).ceil()} more glasses of water, spread through the day.');
-    }
-    if ((s.sleepHours ?? 0) < prefs.sleepGoalHours) {
-      out.add('Start winding down 30 minutes earlier tonight to get closer to ${prefs.sleepGoalHours.toStringAsFixed(prefs.sleepGoalHours % 1 == 0 ? 0 : 1)} hours of sleep.');
-    }
-    if (s.unassignedDoseLogs == 0 && s.dosesScheduled > 0 && s.dosesTaken < s.dosesScheduled) {
-      out.add('Keep reminders on so no dose is missed tomorrow.');
-    }
-    if (s.moodLevel != null && s.moodLevel! <= 1) {
-      out.add('Your mood was low. A short walk or talking to someone you trust can help.');
-    }
-    if (out.isEmpty) out.add('Great day. Keep the same routine tomorrow.');
-    return out.take(3).toList();
   }
 
   @override
@@ -154,7 +122,8 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
             child: FutureBuilder<_ReportData>(
               future: _future,
               builder: (context, snap) => Pressable(
-                onTap: snap.hasData ? () => _copy(context, snap.data!) : null,
+                onTap: snap.connectionState == ConnectionState.done && snap.hasData
+                    ? () => _copy(context, snap.data!) : null,
                 semanticLabel: 'Copy report',
                 child: Glass(
                   height: 52,
@@ -180,9 +149,10 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
     final s = data.stats;
     final text = StringBuffer()
       ..writeln('NOVA Health daily report: ${formatToday(_day)}')
-      ..writeln('Day score: ${_score(s)}/100')
-      ..writeln('Water: ${(s.waterMl / 1000).toStringAsFixed(1)} L')
-      ..writeln('Sleep: ${s.sleepHours == null ? 'not logged' : '${s.sleepHours!.toStringAsFixed(1)} h'}')
+      ..writeln('Tracking score: ${trackingScore(s) ?? 'Unknown'}')
+      ..writeln('Water: ${s.waterMl == null ? 'unknown' : '${s.waterMl} mL logged'}')
+      ..writeln('Sleep: ${s.sleepHours == null ? 'unknown' : '${s.sleepHours!.toStringAsFixed(1)} h'}')
+      ..writeln('Nutrition: ${s.calories == null ? 'calorie total unknown' : '${s.calories} kcal estimated'}')
       ..writeln('Medications: ${s.dosesTaken} of ${s.dosesScheduled} doses');
     if (s.unassignedDoseLogs > 0) {
       text.writeln('${s.unassignedDoseLogs} dose log(s) without a scheduled time');
@@ -199,15 +169,20 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
   List<Widget> _content(BuildContext context, _ReportData data) {
     final c = context.nova;
     final s = data.stats;
-    final prefs = AppPrefs.instance;
-    final score = _score(s);
+    final score = trackingScore(s);
+    final water = s.waterMl;
+    final target = s.waterGoalMl;
+    final sleep = s.sleepHours;
+    final sleepGoal = s.sleepGoalHours;
+    final calories = s.calories;
+    final meals = s.mealCount;
     const moods = ['Awful', 'Low', 'Okay', 'Good', 'Great'];
 
     return [
       NovaCard(
         child: Row(
           children: [
-            SizedBox(
+            if (score != null) SizedBox(
               width: 110,
               height: 110,
               child: Stack(
@@ -216,7 +191,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
                   ActivityRings(
                     size: 110,
                     stroke: 12,
-                    semanticLabel: 'Day score $score out of 100',
+                    semanticLabel: 'Tracking score $score out of 100',
                     rings: [RingValue(score / 100, c.primary)],
                   ),
                   ExcludeSemantics(child: Text('$score', style: NovaType.number(30).copyWith(color: c.textPrimary))),
@@ -228,10 +203,10 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Day score', style: NovaType.headline.copyWith(color: c.textPrimary)),
+                  Text('Tracking score', style: NovaType.headline.copyWith(color: c.textPrimary)),
                   const SizedBox(height: 2),
                   Text(
-                    score >= 80 ? 'A strong day.' : (score >= 50 ? 'A fair day with room to improve.' : 'A tough day. Small steps help.'),
+                    score == null ? 'Unknown. No comparable tracking data.' : 'Based on available sleep goal progress and documented doses.',
                     style: NovaType.subhead.copyWith(color: c.textSecondary),
                   ),
                 ],
@@ -258,16 +233,17 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
               Text(
                 data.summaryError == null
                     ? 'No summary for this day yet.'
-                    : 'The summary is not available right now (${data.summaryError}). Your numbers below are still up to date.',
+                    : 'The summary is not available right now (${data.summaryError}). Your saved measurements are shown below when available.',
                 style: NovaType.subhead.copyWith(color: c.textSecondary),
               ),
             const SizedBox(height: 8),
             Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
               Text('Based on:', style: NovaType.caption.copyWith(color: c.textSecondary)),
-              SourceChip(label: 'Sleep', color: c.sleep),
-              SourceChip(label: 'Hydration', color: c.water),
-              SourceChip(label: 'Medications', color: c.primary),
-              SourceChip(label: 'Mood', color: c.warning),
+              if (sleep != null) SourceChip(label: 'Sleep', color: c.sleep),
+              if (water != null) SourceChip(label: 'Hydration', color: c.water),
+              if (s.dosesScheduled > 0 || s.unassignedDoseLogs > 0)
+                SourceChip(label: 'Medications', color: c.primary),
+              if (s.moodLevel != null) SourceChip(label: 'Mood', color: c.warning),
             ]),
             const SizedBox(height: 8),
             const DisclaimerNote(),
@@ -279,29 +255,30 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
         icon: Icons.bedtime_outlined,
         color: c.sleep,
         title: 'Sleep',
-        value: s.sleepHours == null ? 'Not logged' : '${s.sleepHours!.toStringAsFixed(1)} h',
-        progress: (s.sleepHours ?? 0) / prefs.sleepGoalHours,
-        insight: s.sleepHours == null
-            ? 'Log last night\'s sleep in Track to see this.'
-            : (s.sleepHours! >= prefs.sleepGoalHours ? 'You reached your sleep goal.' : '${(prefs.sleepGoalHours - s.sleepHours!).toStringAsFixed(1)} h under your goal.'),
+        value: sleep == null ? 'Unknown' : '${sleep.toStringAsFixed(1)} h',
+        progress: sleep == null || sleepGoal == null ? null : sleep / sleepGoal,
+        insight: sleepGoal == null ? 'No saved sleep goal.' : 'Saved goal: ${sleepGoal.toStringAsFixed(1)} h.',
       ),
       const SizedBox(height: 12),
       _MetricCard(
         icon: Icons.water_drop_outlined,
         color: c.water,
         title: 'Hydration',
-        value: '${(s.waterMl / 1000).toStringAsFixed(1)} of ${(prefs.waterGoalMl / 1000).toStringAsFixed(1)} L',
-        progress: s.waterMl / prefs.waterGoalMl,
-        insight: s.waterMl >= prefs.waterGoalMl ? 'Water goal reached.' : '${prefs.waterGoalMl - s.waterMl} ml left to reach your goal.',
+        value: water == null ? 'Unknown' : '$water mL logged',
+        progress: null,
+        insight: target == null
+            ? 'Follow any fluid instructions from your care team.'
+            : 'Saved target: $target mL. Follow any fluid instructions from your care team.',
       ),
       const SizedBox(height: 12),
       _MetricCard(
         icon: Icons.restaurant_outlined,
         color: c.warning,
         title: 'Nutrition',
-        value: s.calories == 0 ? 'No meals scanned' : '${formatThousands(s.calories)} kcal',
+        value: calories == null ? 'Calories unknown' : '${formatThousands(calories)} kcal',
         progress: null,
-        insight: s.calories == 0 ? 'Scan a meal to estimate calories.' : 'From the meals you scanned and confirmed.',
+        insight: meals == null ? 'Meal logs unavailable.'
+            : meals == 0 ? 'No meals logged.' : '$meals confirmed meal(s). Calories are estimates.',
       ),
       const SizedBox(height: 12),
       _MetricCard(
@@ -314,7 +291,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
             ? '${s.unassignedDoseLogs} dose log(s) without a scheduled time.'
             : (s.dosesScheduled == 0
                 ? 'No medication reminders on this day.'
-                : (s.dosesTaken >= s.dosesScheduled ? 'Every dose taken.' : '${s.dosesScheduled - s.dosesTaken} dose(s) not logged.')),
+                : (s.dosesTaken >= s.dosesScheduled ? 'All scheduled doses marked taken.' : '${s.dosesScheduled - s.dosesTaken} dose(s) not logged.')),
       ),
       const SizedBox(height: 12),
       NovaCard(
@@ -332,33 +309,6 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
               ),
             ),
             if (s.moodLevel != null) MoodFace(level: s.moodLevel!, color: c.primary, size: 32),
-          ],
-        ),
-      ),
-      const SectionLabel('Top 3 suggestions for tomorrow'),
-      NovaCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final (i, tip) in _suggestions(s).indexed) ...[
-              if (i > 0) const SizedBox(height: 12),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 24,
-                    height: 24,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(color: c.primaryTint, shape: BoxShape.circle),
-                    child: Text('${i + 1}', style: NovaType.footnote.copyWith(fontWeight: FontWeight.w700, color: c.primary)),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(child: Text(tip, style: NovaType.subhead.copyWith(color: c.textPrimary))),
-                ],
-              ),
-            ],
-            const SizedBox(height: 12),
-            const DisclaimerNote(),
           ],
         ),
       ),

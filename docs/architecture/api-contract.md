@@ -175,8 +175,10 @@ The error envelope contains a fixed code and a patient-safe message. Upstream re
 | GET | `/privacy/ai` | Read provider availability, disclosure version and current account consent |
 | POST | `/privacy/ai` | Enable with the current disclosure version, or revoke consent |
 | DELETE | `/privacy/ai/chats` | Delete the signed-in account’s legacy NOVA chat rows |
-| GET | `/reports/daily?date=` | Get the report computed and written inside NOVA |
+| GET | `/reports/daily?date=&start_offset_minutes=&end_offset_minutes=` | Get the NOVA report for the selected local calendar date |
 | GET | `/insights?range=week` | Get long-term insights |
+
+Supply both midnight UTC offsets when requesting a device-local date. The response marks the calendar basis as `device` or `configured`. When chat selects tracking logs or heart-rate records, the app can send `local_calendar` with the local `today` date and 31 ordered `midnight_offsets` from 29 days before today through tomorrow. These values are used only within NOVA.
 
 ### 5.9 Notifications and Emergency
 

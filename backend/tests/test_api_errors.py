@@ -267,19 +267,21 @@ def test_unusable_assistant_step_is_bounded_then_returns_upstream_error(upstream
     assert requests.count("provider") == 2
 
 
-@pytest.mark.parametrize("data,status,code", [
-    (httpx.Response(200, text=MARKER), 502, "DATABASE_RESPONSE_INVALID"),
-    (httpx.Response(200, json=[MARKER]), 502, "DATABASE_RESPONSE_INVALID"),
-    (httpx.Response(200, json=[{"amount_ml": {"invalid": MARKER}}]), 502, "DATABASE_RESPONSE_INVALID"),
-    (httpx.Response(400, text=MARKER), 502, "DATABASE_REQUEST_FAILED"),
-    (httpx.Response(503, text=MARKER), 503, "DATABASE_UNAVAILABLE"),
-    (httpx.ReadTimeout(MARKER), 503, "DATABASE_UNAVAILABLE"),
+@pytest.mark.parametrize("data", [
+    httpx.Response(200, text=MARKER),
+    httpx.Response(200, json=[MARKER]),
+    httpx.Response(200, json=[{"amount_ml": {"invalid": MARKER}}]),
+    httpx.Response(400, text=MARKER),
+    httpx.Response(503, text=MARKER),
+    httpx.ReadTimeout(MARKER),
 ])
-def test_local_report_handles_database_failures(upstreams, caplog, data, status, code):
+def test_local_report_keeps_other_data_when_a_measurement_is_unavailable(upstreams, caplog, data):
     client, responses, requests = upstreams
     responses["/rest/v1/water_logs"] = data
     response = client.get("/api/v1/reports/daily?date=2025-01-02", headers=AUTH)
-    assert_error(response, status, code, caplog)
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    assert "Water: unknown" in response.json()["data"]["highlights"]
+    assert not any(value in response.text + caplog.text for value in (MARKER, AUTH["Authorization"]))
     assert "provider" not in requests
 
 

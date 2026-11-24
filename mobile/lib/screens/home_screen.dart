@@ -152,20 +152,14 @@ class _InsightCard extends StatelessWidget {
   final VoidCallback onOpenReport;
 
   /// Short, plain-language insight built from today's real numbers.
-  /// The full AI summary lives in the daily report.
+  /// The full summary lives in the daily report.
   static String insightFor(HealthSnapshot d) {
-    final waterLeft = ((d.waterGoalL - d.waterL) * 1000).round();
-    final sleepShort = d.sleepMinutes > 0 && d.sleepMinutes < d.sleepGoalMinutes - 30;
     final parts = <String>[];
-    if (sleepShort) {
-      parts.add('You slept ${formatMinutes(d.sleepMinutes)}, a bit under your goal, so you may feel low on energy later.');
-    } else if (d.sleepMinutes >= d.sleepGoalMinutes - 30 && d.sleepMinutes > 0) {
-      parts.add('Good sleep last night.');
+    if (d.sleepMinutes case final minutes?) {
+      parts.add('You logged ${formatMinutes(minutes)} of sleep.');
     }
-    if (waterLeft > 0) {
-      parts.add('About ${(waterLeft / 250).ceil()} more glasses of water gets you to your goal.');
-    } else if (d.waterL > 0) {
-      parts.add('Water goal reached. Nice.');
+    if (d.waterL case final litres?) {
+      parts.add('You logged ${litres.toStringAsFixed(2)} L of water.');
     }
     if (d.nextMedication?.overdue ?? false) {
       parts.add('One dose is overdue; check Medications.');
@@ -198,8 +192,8 @@ class _InsightCard extends StatelessWidget {
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Text('Based on:', style: NovaType.caption.copyWith(color: c.textSecondary)),
-              SourceChip(label: 'Sleep', color: c.sleep),
-              SourceChip(label: 'Hydration', color: c.water),
+              if (data.sleepMinutes != null) SourceChip(label: 'Sleep', color: c.sleep),
+              if (data.waterL != null) SourceChip(label: 'Hydration', color: c.water),
               SourceChip(label: 'Medications', color: c.primary),
             ],
           ),
@@ -276,33 +270,32 @@ class _RingsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.nova;
-    final e = data.isEmpty;
+    final rings = [
+      if (data.sleepProgress case final progress?) RingValue(progress, c.sleep),
+      if (data.stepsProgress case final progress?) RingValue(progress, c.steps),
+    ];
     return NovaCard(
       child: Row(
         children: [
-          ActivityRings(
-            size: 150,
-            semanticLabel: e
-                ? 'No activity logged yet'
-                : 'Water ${(data.waterProgress * 100).round()} percent, '
-                    'sleep ${(data.sleepProgress * 100).round()} percent, '
-                    'steps ${(data.stepsProgress * 100).round()} percent of goal',
-            rings: [
-              RingValue(data.waterProgress, c.water),
-              RingValue(data.sleepProgress, c.sleep),
-              RingValue(data.stepsProgress, c.steps),
-            ],
-          ),
-          const SizedBox(width: 18),
+          if (rings.isNotEmpty) ...[
+            ActivityRings(
+              size: 110,
+              semanticLabel: 'Recorded progress toward saved goals',
+              rings: rings,
+            ),
+            const SizedBox(width: 18),
+          ],
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _Legend(color: c.water, label: 'Water', value: e ? '—' : data.waterL.toStringAsFixed(1), goal: ' / ${data.waterGoalL.toStringAsFixed(1)} L'),
+                _Legend(color: c.water, label: 'Water', value: data.waterL == null ? 'Unknown' : '${data.waterL!.toStringAsFixed(2)} L',
+                    goal: data.waterGoalL == null ? '' : ' · ${data.waterGoalL} L target'),
                 const SizedBox(height: 12),
-                _Legend(color: c.sleep, label: 'Sleep', value: e ? '—' : formatMinutes(data.sleepMinutes), goal: ' / ${formatMinutes(data.sleepGoalMinutes)}'),
+                _Legend(color: c.sleep, label: 'Sleep', value: data.sleepMinutes == null ? 'Unknown' : formatMinutes(data.sleepMinutes!),
+                    goal: data.sleepGoalMinutes == null ? '' : ' / ${formatMinutes(data.sleepGoalMinutes!)}'),
                 const SizedBox(height: 12),
-                _Legend(color: c.steps, label: 'Steps', value: e ? '—' : formatThousands(data.steps), goal: ' / ${formatThousands(data.stepsGoal)}'),
+                _Legend(color: c.steps, label: 'Steps', value: data.steps == null ? 'Unknown' : formatThousands(data.steps!), goal: ''),
               ],
             ),
           ),

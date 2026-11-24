@@ -316,17 +316,22 @@ DoseSlot? nextDose(List<DoseSlot> slots) {
 class DayStats {
   const DayStats({
     required this.day,
-    this.waterMl = 0,
+    this.waterMl,
+    this.waterGoalMl,
+    this.sleepGoalHours,
     this.sleepHours,
     this.moodLevel,
     this.dosesTaken = 0,
     this.dosesScheduled = 0,
     this.unassignedDoseLogs = 0,
-    this.calories = 0,
+    this.calories,
+    this.mealCount,
   });
 
   final DateTime day;
-  final int waterMl;
+  final int? waterMl;
+  final int? waterGoalMl;
+  final double? sleepGoalHours;
   final double? sleepHours;
 
   /// 0 (awful) … 4 (great), or null when no mood was logged.
@@ -334,7 +339,8 @@ class DayStats {
   final int dosesTaken;
   final int dosesScheduled;
   final int unassignedDoseLogs;
-  final int calories;
+  final int? calories;
+  final int? mealCount;
 }
 
 /// Short weekday label (Mon, Tue …).

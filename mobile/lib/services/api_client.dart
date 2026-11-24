@@ -7,6 +7,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config.dart';
 import '../data/scan_models.dart';
+import '../data/care_models.dart';
+import '../data/daily_metrics.dart';
 
 class ApiException implements Exception {
   ApiException(this.message);
@@ -254,6 +256,8 @@ class ApiClient {
       'message': message,
       'reviewed': true,
       'health_data': healthData,
+      if (healthData.any((kind) => kind == 'logs' || kind == 'heart_rate'))
+        'local_calendar': deviceCalendar(DateTime.now()),
       'recent_questions': recentQuestions,
     });
     return AssistantReply.fromJson(data);
@@ -266,9 +270,12 @@ class ApiClient {
 
   /// GET /api/v1/reports/daily?date=YYYY-MM-DD → the NOVA summary text for that day.
   Future<String> dailyReport(DateTime day) async {
-    final date = '${day.year.toString().padLeft(4, '0')}-'
-        '${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
-    final data = await _getJson('/api/v1/reports/daily?date=$date');
+    final query = Uri(queryParameters: {
+      'date': ymd(day),
+      'start_offset_minutes': localBoundaryOffset(day).toString(),
+      'end_offset_minutes': localBoundaryOffset(day, 1).toString(),
+    }).query;
+    final data = await _getJson('/api/v1/reports/daily?$query');
     return (data['report'] as String?) ?? '';
   }
 

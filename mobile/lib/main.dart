@@ -36,9 +36,6 @@ Future<void> main() async {
       if (config.canConnect) ReminderService.instance.attach();
     },
   );
-  if (config.canConnect) {
-    AppPrefs.instance.selectAccount(Supabase.instance.client.auth.currentUser?.id);
-  }
   runApp(app);
 }
 
@@ -72,11 +69,7 @@ class NovaApp extends StatelessWidget {
       final auth = Supabase.instance.client.auth;
       return AccountNavigation(
         initialOwner: auth.currentUser?.id,
-        owners: auth.onAuthStateChange.map((event) {
-          final owner = event.session?.user.id;
-          AppPrefs.instance.selectAccount(auth.currentUser?.id);
-          return owner;
-        }),
+        owners: auth.onAuthStateChange.map((event) => event.session?.user.id),
         builder: (navigator) {
           ReminderService.instance.navigatorKey = navigator;
           return _app(navigator);

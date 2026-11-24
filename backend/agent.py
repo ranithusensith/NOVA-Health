@@ -149,7 +149,7 @@ def _minimize_result(name: str, result: dict, identifiers: tuple[str, ...]) -> d
 
 async def run_agent(question: str, db, *, history: list[dict] | None = None,
                     max_steps: int | None = None, authorize=None, health_data: set[str] | None = None,
-                    identifiers: tuple[str, ...] = ()) -> AgentResult:
+                    identifiers: tuple[str, ...] = (), calendar=None) -> AgentResult:
 
     # 1) Fixed emergency rules run BEFORE any AI call.
     kind = safety.detect_emergency(question)
@@ -201,7 +201,7 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
                     steps.append({"tool": name, "args": args, "ok": False, "note": "repeat"})
                     continue
                 seen.add(key)
-                result = await tools.run_tool(name, raw_args, db)
+                result = await tools.run_tool(name, raw_args, db, calendar=calendar)
                 if name == "get_recent_logs" and args.get("kind") == "symptoms" and result.get("urgent"):
                     kind, text = result["urgent"]
                     return AgentResult(reply=safety.saved_emergency_reply(kind, text=text),

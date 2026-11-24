@@ -32,6 +32,7 @@ from starlette.exceptions import HTTPException
 
 load_dotenv()
 
+import daily_metrics  # noqa: E402
 import ai_privacy  # noqa: E402
 import agent  # noqa: E402  (after load_dotenv so env vars are set)
 import lab_results  # noqa: E402
@@ -269,7 +270,25 @@ async def prescription_safety(db: UserDB, proposed: list[dict], *, replacing: uu
 # ---------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------
+LocalOffset = Annotated[int, Field(strict=True, ge=-840, le=840)]
+
+
+class DeviceCalendar(BaseModel):
+    today: date
+    midnight_offsets: list[LocalOffset] = Field(min_length=31, max_length=31)
+
+    def resolve(self):
+        try:
+            calendar = daily_metrics.LocalCalendar(self.today, self.midnight_offsets)
+            if calendar.boundaries[-2] <= tools.utc_now() < calendar.boundaries[-1]:
+                return calendar
+        except (ValueError, OverflowError):
+            pass
+        raise ApiError(400, "INVALID_INPUT", "Check your device date and time zone.")
+
+
 class ChatRequest(BaseModel):
+    local_calendar: DeviceCalendar | None = None
     message: str
     reviewed: StrictBool = False
     emergency_only: StrictBool = False
@@ -531,6 +550,7 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
             health_data=set(body.health_data),
             identifiers=await _known_identifiers(user, db),
             authorize=partial(ai_privacy.require_consent, db),
+            calendar=body.local_calendar.resolve() if body.local_calendar else None,
         )
 
     return {"data": {
@@ -545,13 +565,23 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
 async def daily_report(
     response: Response,
     date_: date | None = Query(default=None, alias="date"),
+    start_offset_minutes: int | None = Query(default=None, ge=-840, le=840),
+    end_offset_minutes: int | None = Query(default=None, ge=-840, le=840),
     user: dict = Depends(current_user),
     db: UserDB = Depends(get_db),
 ):
     day = date_ or tools.local_today()
     if day in (date.min, date.max):
         raise ApiError(400, "INVALID_INPUT", "Select a date within the supported range.")
-    data = await reports.daily_report(db, day)
+    bounds = None
+    if start_offset_minutes is not None or end_offset_minutes is not None:
+        if date_ is None or start_offset_minutes is None or end_offset_minutes is None:
+            raise ApiError(400, "INVALID_INPUT", "Provide the local date and both midnight offsets.")
+        try:
+            bounds = daily_metrics.day_window(day, (start_offset_minutes, end_offset_minutes))
+        except (ValueError, OverflowError):
+            raise ApiError(400, "INVALID_INPUT", "Select a supported local date and time zone.") from None
+    data = await reports.daily_report(db, day, bounds=bounds)
     response.headers["Cache-Control"] = "no-store"
     return {"data": data}
 

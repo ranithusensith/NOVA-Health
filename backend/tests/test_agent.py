@@ -155,7 +155,7 @@ def test_verified_value_keeps_its_own_measurement_and_source(monkeypatch):
 @pytest.mark.parametrize(("rows", "notice"), [
     ([], "no usable entries"),
     ([{"hours": None, "logged_at": "2026-10-22T04:00:00Z"}], "incomplete"),
-    ([{"hours": 8, "logged_at": "2026-10-22T03:00:00Z"},
+    ([{"hours": 8, "logged_at": "2026-10-22T04:00:00Z"},
       {"hours": 6, "logged_at": "2026-10-22T04:00:00Z"}], "entries disagree"),
 ])
 def test_missing_invalid_and_conflicting_sleep_does_not_produce_a_value(monkeypatch, rows, notice):

@@ -21,6 +21,7 @@ Run each file in order and stop on any SQL error. Apply the full sequence before
 | 9 | [009_lab_result_fidelity.sql](../backend/changes/009_lab_result_fidelity.sql) | Preserve reviewed lab result text, printed references and flags, and unknown report dates. Enforce exact numeric projections for reviewed rows. |
 | 10 | [010_legacy_chat_retention.sql](../backend/changes/010_legacy_chat_retention.sql) | Add owner-only expiration for legacy chats without expanding client privileges. |
 | 11 | [011_medication_safety_review.sql](../backend/changes/011_medication_safety_review.sql) | Gate medication activation and edits on an account-bound safety review. |
+| 12 | [012_daily_tracking_goals.sql](../backend/changes/012_daily_tracking_goals.sql) | Store optional water and sleep tracking goals on the account profile. |
 
 Supabase Auth owns account identities. A signup creates a profile with the account UUID, the optional display name, empty conditions and goals, and onboarding marked incomplete. Health details remain unset until the user enters them. Existing profile fields retain their saved values. AI processing consent still requires its own explicit opt-in.
 
@@ -39,6 +40,7 @@ Check the migration history and review a schema-only snapshot against these file
 - Apply `009` after `008` and before updating FastAPI or Flutter. Verify PostgREST can see the new columns in a disposable copy. Existing lab rows retain their values and dates.
 - Apply `010` after `009`. Review the legacy chat schema on an isolated copy and follow the retention runbook before enabling the job.
 - Apply `011` after `010`. Coordinate the migration, key provisioning and API/mobile releases as described under [P0-3 medication safety review](#p0-3-medication-safety-review).
+- Apply `012` after `011` and before releasing the P0-4 Flutter app and API. Verify the new profile columns through PostgREST and check owner access on a disposable copy.
 - Run the upgrade during a maintenance window. The signup trigger installation and constraint validation acquire locks. Take a backup before applying changes to an existing project.
 
 ## Application database contract
@@ -99,10 +101,12 @@ psql -X -v ON_ERROR_STOP=1 -c '
 '
 
 PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
-  -f backend/changes/011_medication_safety_review.sql
+  -f backend/changes/011_medication_safety_review.sql \
+  -f backend/changes/012_daily_tracking_goals.sql
 
 psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/medication_safety_review.sql \
+  -f backend/changes/tests/daily_tracking_goals.sql \
   -f backend/changes/tests/atomic_health_profile.sql \
   -f backend/changes/tests/medication_dose_occurrences.sql \
   -f backend/changes/tests/lab_result_fidelity.sql \
@@ -111,7 +115,7 @@ psql -X -v ON_ERROR_STOP=1 \
 
 Start the test session as the disposable cluster administrator. The fixtures simulate the Auth schema, the Auth insert role, PostgREST roles and default API grants. They verify PostgreSQL access and integrity. Use separate loopback HTTP services or a disposable Supabase environment for token and HTTP integration.
 
-To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same pre- and post-011 verification sequence.
+To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same verification sequence through migration `012`.
 
 ## H2 patient isolation and verification limits
 
@@ -170,3 +174,12 @@ Medication changes use a short-lived, server-signed assertion. The writer checks
 For a future approved rollout, install `pgcrypto` if needed and give the migration owner usage on its schema. Apply `011`. Provision 32 cryptographically random bytes through the protected database administration connection and put the same value, encoded as 64 hex characters, in the backend secret `MEDICATION_REVIEW_SIGNING_KEY` on all instances. Insert the decoded bytes in `public.nova_medication_signing_key.signing_key` with `singleton = true`. Use a bound parameter and exclude the operation and secret from logs, shell history and application builds. A missing key or a mismatched key blocks activation. Coordinate both sides of a rotation. Verify signed manual and scan saves, stopping and account isolation on a disposable copy before bringing up the matching app and API versions. Check the PostgREST schema cache after applying the migration.
 
 The rule set covers a limited set of recognized allergy conflicts, condition cautions, duplicate ingredients and some dose calculations. It uses the current account data at review time. Existing rows are grandfathered until edited. Custom privileged database writers remain trusted.
+
+
+## P0-4 daily tracking
+
+- The device calendar defines the date. Timestamped rows belong to the interval from the selected local midnight up to, and excluding, the following midnight. The app sends the two applicable offsets to reports and sends the applicable calendar boundaries to NOVA's assistant when selected tracking or heart records need them. The assistant provider receives no offsets or calendar metadata. Earlier API clients use the configured server offset. Browsing an older day after travel uses the device's current time zone for that date.
+- Sleep entries represent the entire night and are assigned to the local day they were logged. The latest entry replaces previous totals for that day. Distinct values at the same latest instant stay unknown. NOVA does not infer sleep sessions or combine naps from the saved duration records. Mood also uses the latest entry.
+- Water adds recorded millilitres. A nutrition total adds calorie estimates from confirmed meals only, and stays unknown if any confirmed meal has an unavailable estimate. An empty log or an unavailable measurement stays unknown. Weekly numbers average days with available measurements. The assistant withholds claims based on incomplete or conflicting evidence.
+- Goals belong to the authenticated profile and remain optional. Previously stored device goals must be entered again in Profile if users want them synced. Historical views show the current saved goals. A water target may represent a fluid cap, so NOVA displays it without prescribing a volume or scoring hydration. Follow any fluid instructions from the care team.
+- The Flutter tracking score averages available sleep goal progress and the fraction of scheduled doses marked taken where at least one identifiable dose exists and no logs are unassigned. It is unavailable without comparable data. The score measures tracking progress. Mood, hydration and nutrition are displayed separately. It does not grade health or confirm that a dose was taken.
