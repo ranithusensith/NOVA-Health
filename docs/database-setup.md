@@ -22,6 +22,7 @@ Run each file in order and stop on any SQL error. Apply the full sequence before
 | 10 | [010_legacy_chat_retention.sql](../backend/changes/010_legacy_chat_retention.sql) | Add owner-only expiration for legacy chats without expanding client privileges. |
 | 11 | [011_medication_safety_review.sql](../backend/changes/011_medication_safety_review.sql) | Gate medication activation and edits on an account-bound safety review. |
 | 12 | [012_daily_tracking_goals.sql](../backend/changes/012_daily_tracking_goals.sql) | Store optional water and sleep tracking goals on the account profile. |
+| 13 | [013_symptom_tracking.sql](../backend/changes/013_symptom_tracking.sql) | Add symptom notes, record revisions, validation and owner-scoped writes. |
 
 Supabase Auth owns account identities. A signup creates a profile with the account UUID, the optional display name, empty conditions and goals, and onboarding marked incomplete. Health details remain unset until the user enters them. Existing profile fields retain their saved values. AI processing consent still requires its own explicit opt-in.
 
@@ -41,6 +42,7 @@ Check the migration history and review a schema-only snapshot against these file
 - Apply `010` after `009`. Review the legacy chat schema on an isolated copy and follow the retention runbook before enabling the job.
 - Apply `011` after `010`. Coordinate the migration, key provisioning and API/mobile releases as described under [P0-3 medication safety review](#p0-3-medication-safety-review).
 - Apply `012` after `011` and before releasing the P0-4 Flutter app and API. Verify the new profile columns through PostgREST and check owner access on a disposable copy.
+- Apply `013` after `012` and before using symptom tracking in Flutter or running the matching FastAPI version. Existing symptom entries remain readable. Verify the PostgREST schema cache and grants in an isolated deployment copy.
 - Run the upgrade during a maintenance window. The signup trigger installation and constraint validation acquire locks. Take a backup before applying changes to an existing project.
 
 ## Application database contract
@@ -49,7 +51,7 @@ Check the migration history and review a schema-only snapshot against these file
 |---|---|
 | Profile and onboarding | Flutter reads its profile and confirmed allergies and saves them through `save_health_profile`. Skipping onboarding updates only the name and onboarding flag. FastAPI reads profile context and confirmed allergies. |
 | Medication and reminders | Flutter reads and stops `medications` through Supabase and submits manual additions, edits and scan confirmations through FastAPI. It logs and undoes selected occurrences in `medication_logs`. FastAPI reviews final drafts and invokes the signed medication writer. The dose FK checks both medication ID and owner. |
-| Tracking and reports | Flutter logs water, sleep, mood and meals. FastAPI reads these tables and `symptom_logs`. Time indexes support per-account history. |
+| Tracking and reports | Flutter logs water, sleep, mood, meals and symptoms. Owners can edit, resolve and delete their symptom logs. FastAPI reads these tables for local reports and selected assistant evidence. Time indexes support per-account history. |
 | Wearables and cycle | Flutter reads, imports and deletes `wearable_samples` and manages `period_logs`. FastAPI reads summaries. The unique wearable key matches Flutter's duplicate-safe import. |
 | Emergency | Flutter manages `emergency_contacts`. FastAPI reads contacts and inserts an SOS record into `audit_log`. |
 | Lab results | Flutter submits reviewed observations to FastAPI, which inserts the batch using the signed-in account's token. Flutter lists and removes its own records. Daily reports and assistant summaries read the corrected observations. |
@@ -104,9 +106,17 @@ PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/011_medication_safety_review.sql \
   -f backend/changes/012_daily_tracking_goals.sql
 
+# Establish a synthetic symptom entry from the read-only baseline.
+psql -X -v ON_ERROR_STOP=1 -v p11_before_migration=1 \
+  -f backend/changes/tests/symptom_tracking.sql
+
+PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
+  -f backend/changes/013_symptom_tracking.sql
+
 psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/medication_safety_review.sql \
   -f backend/changes/tests/daily_tracking_goals.sql \
+  -f backend/changes/tests/symptom_tracking.sql \
   -f backend/changes/tests/atomic_health_profile.sql \
   -f backend/changes/tests/medication_dose_occurrences.sql \
   -f backend/changes/tests/lab_result_fidelity.sql \
@@ -115,7 +125,7 @@ psql -X -v ON_ERROR_STOP=1 \
 
 Start the test session as the disposable cluster administrator. The fixtures simulate the Auth schema, the Auth insert role, PostgREST roles and default API grants. They verify PostgreSQL access and integrity. Use separate loopback HTTP services or a disposable Supabase environment for token and HTTP integration.
 
-To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same verification sequence through migration `012`.
+To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same verification sequence through migration `013`.
 
 ## H2 patient isolation and verification limits
 
@@ -183,3 +193,14 @@ The rule set covers a limited set of recognized allergy conflicts, condition cau
 - Water adds recorded millilitres. A nutrition total adds calorie estimates from confirmed meals only, and stays unknown if any confirmed meal has an unavailable estimate. An empty log or an unavailable measurement stays unknown. Weekly numbers average days with available measurements. The assistant withholds claims based on incomplete or conflicting evidence.
 - Goals belong to the authenticated profile and remain optional. Previously stored device goals must be entered again in Profile if users want them synced. Historical views show the current saved goals. A water target may represent a fluid cap, so NOVA displays it without prescribing a volume or scoring hydration. Follow any fluid instructions from the care team.
 - The Flutter tracking score averages available sleep goal progress and the fraction of scheduled doses marked taken where at least one identifiable dose exists and no logs are unassigned. It is unavailable without comparable data. The score measures tracking progress. Mood, hydration and nutrition are displayed separately. It does not grade health or confirm that a dose was taken.
+
+
+## P1-1 symptom tracking
+
+Track → Symptoms lists the signed-in patient's entries newest first, including resolved entries. Each new log records a symptom type, onset and active or resolved status. Severity and notes are optional. An unsupported status or severity on an older record appears as unknown. Editing an older entry may require selecting a valid status or providing an onset before it can be saved. Resolution records the current status. The app does not infer a resolution date. History and edits use the account owner, and edits and deletes compare the loaded revision with the current row.
+
+Migration `013` keeps the restrictive owner policy, existing reads and earlier records. It adds write access only to the authenticated owner. Future writes validate fields and use a fresh revision. The Flutter editor uses a stable ID for create retries. Direct owner writes are supported by RLS and validation. They bypass the Flutter draft warning screen, and saved entries can still be checked by NOVA on request.
+
+Daily reports show symptoms with onset on the selected local date alongside the other recorded measurements. The assistant uses patient symptom entries when the user selects tracking logs for a reviewed reply and has external AI consent. NOVA writes the visible facts from those records. Symptom names, notes and onset dates stay out of the provider payload for selected symptom records. Local red-flag checks run independently of external AI consent.
+
+The September 23, 2026 NOVA Health project proposal calls for symptom tracking in the deliverables and for symptoms to be connected with relevant health context in the core features. This workflow covers recording, reviewing and resolving observations, putting them alongside daily health data, and surfacing them in grounded assistant replies. P1-1 does not infer causes, attribute symptoms to other records, or add new clinical recommendations.

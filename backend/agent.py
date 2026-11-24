@@ -123,7 +123,7 @@ def _minimize_result(name: str, result: dict, identifiers: tuple[str, ...]) -> d
         ) if key in result}
         if "symptoms" in result:
             out["symptoms"] = [
-                {key: clean(row.get(key)) for key in ("name", "severity", "status")}
+                {key: clean(row.get(key)) for key in ("severity", "status")}
                 for row in result["symptoms"][:15]
             ]
         for key in ("ml_per_day", "hours_per_day", "moods_per_day"):

@@ -273,21 +273,6 @@ def detect_emergency(text: str) -> str | None:
     return "medical" if medical else None
 
 
-def logged_emergency(rows: list[dict]) -> tuple[str, str] | None:
-    """Prioritize a self-harm alert when multiple current symptom logs match."""
-    medical = None
-    for row in rows:
-        text = row.get("name")
-        if row.get("status") != "active" or not isinstance(text, str):
-            continue
-        kind = detect_emergency(text)
-        if kind == "self_harm":
-            return kind, text
-        if kind == "medical" and medical is None:
-            medical = kind, text
-    return medical
-
-
 def _tamil_response(text: str) -> bool:
     return len(_TAMIL.findall(text)) > len(_SINHALA.findall(text))
 

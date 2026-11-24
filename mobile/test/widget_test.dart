@@ -60,7 +60,7 @@ void main() {
 
       // Before a mood is picked the save button reads 'Pick a mood' and is disabled
       final button = find.widgetWithText(NovaButton, 'Pick a mood');
-      await tester.ensureVisible(button);
+      await tester.scrollUntilVisible(button, 250, scrollable: find.byType(Scrollable).first);
       expect(tester.widget<NovaButton>(button).onPressed, isNull);
 
       // Select 'Good' mood (call the callback directly; a tap on the small target may miss)

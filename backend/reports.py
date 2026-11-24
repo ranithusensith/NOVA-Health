@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 import daily_metrics as metrics
 import safety
+import symptoms
 import tools
 from db import DBError
 
@@ -50,7 +51,13 @@ async def _day_doses(db, day: date, bounds) -> tuple[int, int]:
 
 async def build_daily_data(db, day: date, *, bounds=None) -> dict:
     bounds = bounds or tuple(map(tools.parse_ts, tools.day_bounds_utc(day)))
-    urgent = await tools.recent_saved_emergency(db) if bounds[0] <= tools.utc_now() < bounds[1] else None
+    urgent = None
+    symptom_check_unavailable = False
+    if bounds[0] <= tools.utc_now() < bounds[1]:
+        try:
+            urgent = await tools.recent_saved_emergency(db)
+        except DBError:
+            symptom_check_unavailable = True
     water = await _day_rows(db, "water_logs", "amount_ml,logged_at", "logged_at", bounds)
     sleep = await _day_rows(db, "sleep_logs", "hours,logged_at", "logged_at", bounds)
     mood_rows = await _day_rows(db, "mood_logs", "mood,logged_at", "logged_at", bounds)
@@ -65,6 +72,7 @@ async def build_daily_data(db, day: date, *, bounds=None) -> dict:
         goals = {}
     taken, unassigned = await _day_doses(db, day, bounds)
     meds = (await tools.get_medications(db, {}, day=day, history=True))["medications"]
+    symptom_rows = await _day_rows(db, "symptom_logs", symptoms.SUMMARY_COLUMNS, "started_at", bounds)
     labs = await tools.get_lab_results(db, {}, day=day)
 
     try:
@@ -96,8 +104,10 @@ async def build_daily_data(db, day: date, *, bounds=None) -> dict:
         "doses_taken": taken,
         "unassigned_dose_logs": unassigned,
         "lab_results": labs.get("results", []),
+        "symptoms": [symptoms.observation(row) for row in symptom_rows] if symptom_rows is not None else None,
         "warnings": warnings,
         "emergency": urgent,
+        "symptom_check_unavailable": symptom_check_unavailable,
     }
 
 
@@ -127,6 +137,14 @@ def highlights(d: dict) -> list[str]:
         out.append(f"Medicines: {d['doses_taken']} of {d['doses_scheduled']} doses marked taken")
     if d["unassigned_dose_logs"]:
         out.append(f"Medicines: {d['unassigned_dose_logs']} dose log(s) without a scheduled time")
+    observations = d["symptoms"]
+    if observations is None:
+        out.append("Symptoms: entries unavailable")
+    elif observations:
+        out.append(f"Symptoms: {len(observations)} entries with onset this day")
+        out.extend(f"Symptom log: {symptoms.description(row)}" for row in observations[:5])
+    else:
+        out.append("Symptoms: none recorded with onset this day")
     for lab in d["lab_results"]:
         if lab["result"] is None:
             continue
@@ -165,6 +183,8 @@ async def daily_report(db, day: date, *, bounds=None) -> dict:
     if data["emergency"]:
         kind, symptom = data["emergency"]
         text = safety.saved_emergency_reply(kind, text=symptom) + "\n\n" + text
+    elif data["symptom_check_unavailable"]:
+        text = "NOVA could not check recent symptoms. If you need urgent help, call your local emergency number.\n\n" + text
     return {
         "date": day.isoformat(),
         "calendar_basis": "device" if bounds is not None else "configured",

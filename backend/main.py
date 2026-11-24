@@ -42,6 +42,7 @@ import reports  # noqa: E402
 import rules  # noqa: E402
 import safety  # noqa: E402
 import scan  # noqa: E402
+import symptoms  # noqa: E402
 import tools  # noqa: E402
 from db import DBError, InvalidDBResponse, UserDB  # noqa: E402
 from upstream import decode_json  # noqa: E402
@@ -102,7 +103,7 @@ async def safe_api_responses(request: Request, call_next):
         # Exception messages, tracebacks, request URLs and bodies may include patient data.
         error_log.error("API request failed unexpectedly")
         return _error_response(500, "SERVER_ERROR", "Could not process this request.")
-    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/", "/api/v1/medications/")):
+    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/", "/api/v1/medications/", "/api/v1/symptoms/")):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -559,6 +560,25 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
         "warnings": [{"severity": w["severity"], "message": w["message"]} for w in result.warnings],
         "emergency": result.emergency,
     }}
+
+
+class SymptomSafetyDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+    notes: str | None = Field(default=None, max_length=1000)
+    started_at: AwareDatetime
+    status: Literal["active", "resolved"]
+
+
+@app.post("/api/v1/symptoms/check")
+async def check_symptom(body: SymptomSafetyDraft, _user: dict = Depends(current_user)):
+    """Check the unsaved observation inside NOVA, without external AI or writes."""
+    alert = symptoms.recent_emergency([body.model_dump(mode="json")], tools.utc_now())
+    if alert is None:
+        return {"data": {"emergency": False, "reply": ""}}
+    kind, text = alert
+    return {"data": {"emergency": True, "reply": safety.emergency_reply(kind, text=text)}}
 
 
 @app.get("/api/v1/reports/daily")

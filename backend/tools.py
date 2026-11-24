@@ -15,6 +15,7 @@ import daily_metrics
 import lab_results
 import rules
 import safety
+import symptoms
 from db import InvalidDBResponse
 
 TZ_OFFSET_MIN = int(os.environ.get("LOCAL_TZ_OFFSET_MIN", "330"))  # Sri Lanka = UTC+5:30
@@ -62,7 +63,7 @@ KINDS = {
     "sleep": ("sleep_logs", "hours,logged_at", "logged_at"),
     "mood": ("mood_logs", "mood,logged_at", "logged_at"),
     "meals": ("meal_logs", "description,calories,logged_at", "logged_at"),
-    "symptoms": ("symptom_logs", "name,severity,status,started_at", "started_at"),
+    "symptoms": ("symptom_logs", f"{symptoms.SUMMARY_COLUMNS},notes", "started_at"),
 }
 
 
@@ -76,12 +77,13 @@ def summarize_logs(kind: str, rows: list[dict], days: int, calendar=None) -> dic
     if kind == "symptoms":
         items = []
         for r in rows[:20]:
-            items.append({
-                "name": r.get("name"),
-                "severity": r.get("severity"),
-                "status": r.get("status"),
-                "since": day_for(r["started_at"]).isoformat() if r.get("started_at") else None,
-            })
+            item = symptoms.observation(r)
+            try:
+                started = daily_metrics.instant(r["started_at"]).isoformat()
+                item["since"] = day_for(started).isoformat()
+            except (KeyError, TypeError, ValueError):
+                item["since"] = None
+            items.append(item)
         out["symptoms"] = items
         out["count"] = len(items)
         return out
@@ -315,7 +317,7 @@ async def get_recent_logs(db, args: dict, *, calendar=None) -> dict:
     if kind in values and any(value is None for value in values[kind]()):
         # Partial windows cannot support a reliable whole-window claim.
         return {"kind": kind, "incomplete": True}
-    if kind == "symptoms" and (alert := _recent_urgent_symptom(rows, utc_now())):
+    if kind == "symptoms" and (alert := symptoms.recent_emergency(rows, utc_now())):
         result["urgent"] = alert
     return result
 
@@ -324,31 +326,16 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _recent_urgent_symptom(rows: list[dict], now: datetime) -> tuple[str, str] | None:
-    cutoff = now - timedelta(hours=24)
-    recent = []
-    for row in rows:
-        if row.get("status") != "active":
-            continue
-        try:
-            started = parse_ts(row.get("started_at"))
-        except (TypeError, ValueError, AttributeError):
-            continue
-        if cutoff <= started <= now:
-            recent.append(row)
-    return safety.logged_emergency(recent)
-
-
 async def recent_saved_emergency(db) -> tuple[str, str] | None:
     """Check recent active symptoms using the caller's database session."""
     now = utc_now()
     cutoff = (now - timedelta(hours=24)).isoformat()
     rows = await db.select(
-        "symptom_logs", "name,status,started_at",
+        "symptom_logs", symptoms.SAFETY_COLUMNS,
         filters={"status": "eq.active", "and": f"(started_at.gte.{cutoff},started_at.lte.{now.isoformat()})"},
         order="started_at.desc", limit=100,
     )
-    return _recent_urgent_symptom(rows, now)
+    return symptoms.recent_emergency(rows, now)
 
 
 async def get_heart_rate(db, args: dict, *, calendar=None) -> dict:

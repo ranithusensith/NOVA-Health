@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config.dart';
 import '../data/scan_models.dart';
+import '../data/symptom_repository.dart';
 import '../data/care_models.dart';
 import '../data/daily_metrics.dart';
 
@@ -233,6 +234,17 @@ class ApiClient {
 
   Future<FoodScan> scanFood(XFile file) async {
     return FoodScan.fromJson(await _sendImage('/api/v1/scan/food', file, reviewed: true));
+  }
+
+  /// Local symptom check. The endpoint neither saves the draft nor sends it to AI.
+  Future<String?> checkSymptomEmergency(SymptomDraft draft, String accountId) async {
+    if (aiAccountId != accountId) throw ApiException('Open Symptoms from your signed-in account.');
+    final data = await _postJson('/api/v1/symptoms/check', draft.safetyJson, timeout: const Duration(seconds: 8));
+    if (aiAccountId != accountId) throw ApiException('Open Symptoms from your signed-in account.');
+    final reply = data['reply'];
+    if (data['emergency'] == false && reply == '') return null;
+    if (data['emergency'] == true && reply is String && reply.trim().isNotEmpty) return reply;
+    throw ApiException('NOVA could not complete the symptom safety check.');
   }
 
   /// Checks the question on NOVA's backend before AI consent or sharing.
