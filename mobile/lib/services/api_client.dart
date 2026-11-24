@@ -221,6 +221,16 @@ class ApiClient {
     return FoodScan.fromJson(await _sendImage('/api/v1/scan/food', file, reviewed: true));
   }
 
+  /// Checks the question on NOVA's backend before AI consent or sharing.
+  Future<String?> checkAssistantEmergency(String message) async {
+    if (AppConfig.useMockApi) return null;
+    final data = await _postJson('/api/v1/assistant/chat', {
+      'message': message,
+      'emergency_only': true,
+    }, timeout: const Duration(seconds: 8));
+    return data['emergency'] == true ? data['reply'] as String : null;
+  }
+
   /// Sends a message to the AI assistant and returns its reply text.
   Future<String> chat(String message, {List<String> healthData = const [], List<String> recentQuestions = const []}) async {
     if (AppConfig.useMockApi) {

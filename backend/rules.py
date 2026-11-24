@@ -81,14 +81,49 @@ def _allergy_families(allergy: str) -> set[str]:
     return fams
 
 
+_MASS = r"([0-9]{1,5}(?:\.[0-9]{1,4})?)\s*(mg|g)"
+
+
 def parse_mg(dosage: str | None) -> float | None:
-    if not dosage:
+    if not isinstance(dosage, str):
         return None
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(mg|g)\b", dosage.lower())
-    if not m:
+    match = re.fullmatch(_MASS, _norm(dosage))
+    if not match:
         return None
-    value = float(m.group(1))
-    return value * 1000 if m.group(2) == "g" else value
+    value = float(match[1]) * (1000 if match[2] == "g" else 1)
+    return value if value > 0 else None
+
+
+def _paracetamol_mg_per_dose(med: dict) -> float | None:
+    dosage = med.get("dosage")
+    if not isinstance(dosage, str):
+        return None
+    text = _norm(dosage)
+    if text.endswith(" per dose"):
+        return parse_mg(text.removesuffix(" per dose"))
+    match = re.fullmatch(r"([1-9][0-9]?) tablets? (?:of |x )(" + _MASS + r")(?: each)?", text)
+    if match and (strength := parse_mg(match[2])) is not None:
+        return int(match[1]) * strength
+    return None
+
+
+def _doses_per_24h(plan: dict) -> int | None:
+    if plan.get("kind") == "interval":
+        minutes = plan.get("interval_minutes")
+        if type(minutes) is int and 1 <= minutes <= 525600:
+            return 1 + (24 * 60 - 1) // minutes
+    if plan.get("kind") == "daily":
+        frequency = plan.get("frequency")
+        if isinstance(frequency, str):
+            text = _norm(frequency)
+            named = {"daily": 1, "once daily": 1, "twice daily": 2, "three times daily": 3,
+                     "four times daily": 4}
+            if text in named:
+                return named[text]
+            match = re.fullmatch(r"([1-9]|1[0-9]|2[0-4]) times? (?:daily|a day|per day)", text)
+            if match:
+                return int(match[1])
+    return None
 
 
 def check_allergy_conflicts(medicines: list[str], allergies: list[str]) -> list[Warning]:
@@ -112,7 +147,7 @@ def check_allergy_conflicts(medicines: list[str], allergies: list[str]) -> list[
                     family_text = f" ({fam} family)"
                 out.append(Warning(
                     "high",
-                    f"{med}{family_text}: {why}. Do not take it until a doctor or pharmacist confirms it is safe for you.",
+                    f"{med}{family_text}: {why}. Do not take it until a doctor or pharmacist has reviewed the allergy.",
                     med,
                 ))
                 break  # one warning per medicine is enough
@@ -151,35 +186,52 @@ def check_duplicates(medicines: list[str]) -> list[Warning]:
 
 
 def check_paracetamol_limit(meds: list[dict]) -> list[Warning]:
-    """meds: [{'name','dosage','times':[...]}]. Assumes one unit per time."""
+    """Estimate planned exposure from explicit amounts and prescription timing."""
     total = 0.0
     names: list[str] = []
-    for m in meds:
-        if "paracetamol" not in families_of(m.get("name", "")):
+    unknown: list[str] = []
+    for med in meds:
+        name = med.get("name")
+        if not isinstance(name, str) or "paracetamol" not in families_of(name):
             continue
-        mg = parse_mg(m.get("dosage"))
-        plan = m.get("prescription_plan") or {}
-        if plan.get("kind") == "interval":
-            interval = plan["interval_minutes"]
-            # Maximum number of occurrences in a rolling 24-hour window.
-            per_day = 1 + (24 * 60 - 1) // interval
-        else:
-            per_day = len(m.get("times") or [])
-        if mg and per_day:
-            total += mg * per_day
-            names.append(m.get("name", "paracetamol"))
+        plan = med.get("prescription_plan")
+        per_day = _doses_per_24h(plan) if isinstance(plan, dict) else None
+        # Strength alone does not say how many units a person takes. A product
+        # with another known ingredient family also needs an ingredient review.
+        single_ingredient = _norm(name) in FAMILIES["paracetamol"]
+        mg = _paracetamol_mg_per_dose(med) if single_ingredient else None
+        if isinstance(plan, dict) and plan.get("kind") == "daily" and med.get("times"):
+            # Reviewed daily dose times and written frequency should agree.
+            # They do not supply the frequency when the directions are unclear.
+            if len(med["times"]) != per_day:
+                per_day = None
+        if mg is None or per_day is None:
+            unknown.append(name)
+            continue
+        total += mg * per_day
+        names.append(name)
+
+    warnings = []
     if total > 4000:
-        return [Warning(
+        warnings.append(Warning(
             "high",
-            f"Your paracetamol adds up to about {total / 1000:.1f} g a day. More than 4 g a day can damage "
-            "the liver. Talk to a pharmacist or doctor today.",
+            f"The recorded schedules could add up to {total / 1000:g} g of paracetamol in 24 hours, "
+            "above the general adult limit. Ask a pharmacist or doctor to review the prescription. "
+            "If you may have taken too much, seek urgent medical help now.",
             names[0],
-        )]
-    return []
+        ))
+    if unknown:
+        warnings.append(Warning(
+            "caution",
+            "The paracetamol total could not be checked for all recorded medicines. Ask a pharmacist "
+            "to verify the ingredients, amount per dose and dosing instructions.",
+            unknown[0],
+        ))
+    return warnings
 
 
 def check_all(meds: list[dict], allergies: list[str], conditions: list[str]) -> list[Warning]:
-    names = [m.get("name", "") for m in meds if m.get("name")]
+    names = [name for m in meds if isinstance(name := m.get("name"), str) and name.strip()]
     results = (
         check_allergy_conflicts(names, allergies)
         + check_paracetamol_limit(meds)

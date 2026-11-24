@@ -9,6 +9,7 @@ import '../widgets/floating_tab_bar.dart';
 import '../widgets/glass.dart';
 import '../widgets/pressable.dart';
 import 'ai_privacy_screen.dart';
+import 'emergency_screen.dart';
 
 enum ChatKind { user, ai, error, typing }
 
@@ -66,6 +67,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
     setState(() => _waiting = true);
     ChatItem? reply;
     try {
+      final emergency = await api.checkAssistantEmergency(text);
+      if (!mounted || !current()) return;
+      if (emergency != null) {
+        _input.clear();
+        setState(() => _items = [..._items, ChatItem.user(text)]);
+        reply = ChatItem.ai(emergency);
+        return;
+      }
       if (!await ensureAiConsent(context) || !mounted || !current()) return;
       final sharing = AppConfig.useMockApi ? const AiChatShare() : await showDialog<AiChatShare>(
         context: context,
@@ -144,8 +153,12 @@ class _AssistantScreenState extends State<AssistantScreen> {
                       Semantics(header: true, child: Text('Assistant', style: NovaType.largeTitle.copyWith(color: c.textPrimary))),
                       const SizedBox(height: 2),
                       const DisclaimerNote(icon: true),
-                      Text('Questions you share are processed by Google Gemini.',
+                      Text('NOVA checks for emergencies first. Questions you share are processed by Google Gemini.',
                           style: NovaType.caption.copyWith(color: c.textSecondary)),
+                      TextButton(
+                        onPressed: () => openEmergency(context),
+                        child: const Text('Emergency help'),
+                      ),
                     ],
                   ),
                 );

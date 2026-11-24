@@ -229,13 +229,8 @@ def _active_meds(rows: list[dict], today: date) -> list[dict]:
             "times": m.get("times") or [],
             "until": m.get("end_date"),
         }
-        plan = m.get("prescription_plan") or {}
-        if plan.get("kind") == "interval":
-            med["prescription_plan"] = {
-                "kind": "interval",
-                "interval_minutes": plan["interval_minutes"],
-                "first_dose_at": plan["first_dose_at"],
-            }
+        if isinstance(plan := m.get("prescription_plan"), dict):
+            med["prescription_plan"] = plan
         out.append(med)
     return out
 
@@ -249,11 +244,22 @@ async def get_medications(db, args: dict, *, day: date | None = None) -> dict:
 
 def scheduled_doses_on(med: dict, day: date) -> int:
     plan = med.get("prescription_plan")
-    if not plan:
+    if not plan or plan.get("kind") == "daily":
         return len(med["times"])
+    if plan.get("kind") not in (None, "interval"):
+        return 0
+    minutes = plan.get("interval_minutes")
+    if type(minutes) is not int or not 1 <= minutes <= 525600:
+        return 0
+    try:
+        anchor = plan["first_dose_at"]
+        if datetime.fromisoformat(anchor).utcoffset() is None:
+            return 0
+        first = parse_ts(anchor)
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return 0
     start, end = map(parse_ts, day_bounds_utc(day))
-    first = parse_ts(plan["first_dose_at"])
-    interval = timedelta(minutes=plan["interval_minutes"])
+    interval = timedelta(minutes=minutes)
     before_start = max(timedelta(), start - first)
     before_end = max(timedelta(), end - first)
     following_start = -(-before_start // interval)
@@ -299,9 +305,10 @@ async def get_lab_results(db, args: dict, *, day: date | None = None) -> dict:
             "note": "Copied from the user's own reports. Do not diagnose from these."}
 
 
-async def get_safety_warnings(db) -> list[dict]:
+async def get_safety_warnings(db, *, meds: list[dict] | None = None) -> list[dict]:
     """Runs the rule engine on the user's current medicines, allergies and conditions."""
-    meds = (await get_medications(db, {}))["medications"]
+    if meds is None:
+        meds = (await get_medications(db, {}))["medications"]
     if not meds:
         return []
     allergies = (await get_allergies(db, {}))["allergies"]
