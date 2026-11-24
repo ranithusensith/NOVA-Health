@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Awaitable, Callable
+from uuid import UUID
 
 import lab_results
 import rules
@@ -246,9 +247,12 @@ def _active_meds(rows: list[dict], today: date) -> list[dict]:
     return out
 
 
-async def get_medications(db, args: dict, *, day: date | None = None) -> dict:
+async def get_medications(db, args: dict, *, day: date | None = None, excluding: UUID | None = None) -> dict:
+    filters = {"status": "eq.confirmed"}
+    if excluding is not None:
+        filters["id"] = f"neq.{excluding}"
     rows = await db.select(
-        "medications", "name,dosage,times,start_date,end_date,prescription_plan", filters={"status": "eq.confirmed"},
+        "medications", "name,dosage,times,start_date,end_date,prescription_plan", filters=filters,
     )
     return {"medications": _active_meds(rows, day or local_today())}
 

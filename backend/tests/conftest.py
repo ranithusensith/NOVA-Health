@@ -15,3 +15,8 @@ def forbid_external_http(monkeypatch):
         pytest.fail("Unmocked outbound HTTP request")
 
     monkeypatch.setattr(httpx.AsyncClient, "send", fail)
+
+
+@pytest.fixture(autouse=True)
+def synthetic_medication_signing_key(monkeypatch):
+    monkeypatch.setenv("MEDICATION_REVIEW_SIGNING_KEY", "a1" * 32)

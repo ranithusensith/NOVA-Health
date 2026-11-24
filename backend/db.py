@@ -8,6 +8,7 @@ means the backend does NOT need the secret (service_role) key.
 
 from datetime import datetime, timezone
 import os
+from uuid import UUID
 
 import httpx
 from upstream import decode_json
@@ -113,6 +114,40 @@ class UserDB:
         except (httpx.HTTPError, httpx.InvalidURL):
             raise DBError("Could not update AI consent.") from None
         _check_status(res)
+
+    async def medication_safety_version(self) -> str | None:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    f"{self._base}/rpc/medication_safety_version", json={}, headers=self._headers(),
+                )
+        except (httpx.HTTPError, httpx.InvalidURL):
+            raise DBError("Could not read medication safety context.") from None
+        _check_status(response)
+        try:
+            version = decode_json(response.content)
+            return None if version is None else str(UUID(version))
+        except (ValueError, AttributeError, TypeError):
+            raise InvalidDBResponse() from None
+
+    async def save_reviewed_medications(self, payload: str, signature: str) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    f"{self._base}/rpc/save_reviewed_medications",
+                    json={"review_payload": payload, "review_signature": signature},
+                    headers=self._headers(),
+                )
+        except (httpx.HTTPError, httpx.InvalidURL):
+            raise DBError("Could not verify medication save.") from None
+        _check_status(response)
+        try:
+            saved = decode_json(response.content)
+        except ValueError:
+            raise InvalidDBResponse() from None
+        if type(saved) is not bool:
+            raise InvalidDBResponse()
+        return saved
 
     async def delete_legacy_ai_chats(self) -> int:
         try:
