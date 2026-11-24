@@ -17,10 +17,16 @@ The app uses Supabase for login. External AI is optional and disabled by default
    Before a demo, open `/health` once to wake it.
 
 ## C. Point the app at it
-1. In `mobile/dart_defines.json` set `"API_URL": "https://<your-service>.onrender.com"` and `"USE_MOCK_API": "false"`.
-2. Run: `flutter run --dart-define-from-file=dart_defines.json`
-3. For a release APK: `flutter build apk --release --dart-define-from-file=dart_defines.json`
-   The file is `build/app/outputs/flutter-apk/app-release.apk`. Send it to phones and install it.
+
+For a real build, copy `mobile/dart_defines.example.json` to an ignored local configuration file. Set `SUPABASE_URL` and `API_URL` to the approved HTTPS endpoints, use the Supabase project's publishable key (or a legacy `anon` key), and set `USE_MOCK_API` to `false`. Keep service-role keys and other secrets in server configuration. Android and iOS validate these settings before compiling Profile or Release, and NOVA checks them again before initializing Supabase. Debug builds allow HTTP only for loopback development endpoints, including the Android emulator's `10.0.2.2` alias.
+
+From `mobile/`, run `flutter build apk --release --dart-define-from-file=dart_defines.json` for the Android release artifact. Release APKs are unsigned until the team supplies approved release signing. For an unsigned iOS compile check, run `flutter build ios --release --no-codesign --dart-define-from-file=dart_defines.json`. Use the approved signing and provisioning setup for device installs. The configuration check validates URL and key format. The release operator still needs to verify that the endpoints and key belong to the intended environment.
+
+### Offline scan demos
+
+From `mobile/`, run `flutter run --debug --dart-define=USE_MOCK_API=true`. Demo mode opens a labeled screen with bundled synthetic prescription, lab, and meal examples. Demo saves stay in memory. The demo needs no login or network configuration, and never initializes Supabase, requests access to the photo library, or sends anything to an AI provider. To return to real mode, stop the demo and start a new build with valid real settings. Demo records do not carry over. Use a dedicated device or simulator if you need to keep demo installs separate from a real installation.
+
+If a demonstration needs real API behavior, use synthetic accounts in a disposable environment with its own backend and Supabase project. Apply the migrations there. Review the final artifact and its signing before distribution.
 
 ## D. Real SMS for SOS (optional)
 1. twilio.com -> trial account (free credit). Trial accounts can only text numbers you verify in the console.

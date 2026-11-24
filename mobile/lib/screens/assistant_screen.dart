@@ -1,7 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
-import '../config.dart';
 import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
@@ -26,7 +25,7 @@ class ChatItem {
 
 /// 06 AI Assistant — iMessage-style chat with suggestion chips and a floating
 /// glass input bar. Replies come from POST /api/v1/assistant/chat
-/// (ApiClient.chat; USE_MOCK_API=true returns a sample reply).
+/// using ApiClient.chat.
 class AssistantScreen extends StatefulWidget {
   const AssistantScreen({super.key});
 
@@ -61,9 +60,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (text.isEmpty || _waiting) return;
     final conversation = _conversation;
     final api = ApiClient.instance;
-    final owner = AppConfig.useMockApi ? null : api.aiAccountId;
+    final owner = api.aiAccountId;
+    if (owner == null) return;
     bool current() => mounted && conversation == _conversation &&
-        (AppConfig.useMockApi || api.aiAccountId == owner);
+        api.aiAccountId == owner;
     setState(() => _waiting = true);
     ChatItem? reply;
     try {
@@ -76,7 +76,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
         return;
       }
       if (!await ensureAiConsent(context) || !mounted || !current()) return;
-      final sharing = AppConfig.useMockApi ? const AiChatShare() : await showDialog<AiChatShare>(
+      final sharing = await showDialog<AiChatShare>(
         context: context,
         builder: (_) => const AiChatReview(),
       );

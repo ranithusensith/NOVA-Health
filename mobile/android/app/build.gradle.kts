@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -31,13 +33,6 @@ android {
         versionName = flutter.versionName
     }
 
-    buildTypes {
-        release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
-        }
-    }
 }
 
 kotlin {
@@ -48,6 +43,24 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+val validateNovaProductionConfig by tasks.registering(Exec::class) {
+    val properties = Properties().apply {
+        rootProject.file("local.properties").inputStream().use { load(it) }
+    }
+    val flutterSdk = requireNotNull(properties.getProperty("flutter.sdk"))
+    val dartExecutable = if (System.getProperty("os.name").startsWith("Windows")) "dart.exe" else "dart"
+    executable = "$flutterSdk/bin/cache/dart-sdk/bin/$dartExecutable"
+    workingDir = projectDir.resolve("../..")
+    args("tool/validate_release_config.dart")
+    environment("DART_DEFINES", providers.gradleProperty("dart-defines").orElse("").get())
+}
+
+tasks.configureEach {
+    if (name in setOf("preProfileBuild", "preReleaseBuild", "compileFlutterBuildProfile", "compileFlutterBuildRelease")) {
+        dependsOn(validateNovaProductionConfig)
+    }
 }
 
 dependencies {

@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../config.dart';
 import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/glass.dart';
@@ -53,7 +52,8 @@ class _ScanCameraScreenState extends State<ScanCameraScreen> {
     if (_processing) return;
     final mode = _mode;
     final api = ApiClient.instance;
-    final owner = AppConfig.useMockApi ? null : api.aiAccountId;
+    final owner = api.aiAccountId;
+    if (owner == null) return;
     HapticFeedback.mediumImpact();
     setState(() => _processing = true);
     try {
@@ -75,30 +75,28 @@ class _ScanCameraScreenState extends State<ScanCameraScreen> {
       final bytes = await file.readAsBytes();
       if (!mounted || !_sameAccount(owner)) return;
       String? text;
-      if (!AppConfig.useMockApi) {
-        if (mode == ScanMode.food) {
-          final approved = await showDialog<bool>(
-            context: context,
-            builder: (_) => FoodPhotoReview(image: bytes),
-          );
-          if (approved != true) return;
-        } else {
-          String draft;
-          String? extractionMessage;
-          try {
-            draft = await api.extractMedicalText(file);
-            if (draft.trim().isEmpty) extractionMessage = 'No text was read. You can type the clinical details below.';
-          } on ApiException {
-            draft = '';
-            extractionMessage = 'Could not read this photo privately. You can type the clinical details below.';
-          }
-          if (!mounted || !_sameAccount(owner)) return;
-          text = await showDialog<String>(
-            context: context,
-            builder: (_) => MedicalTextReview(text: draft, extractionMessage: extractionMessage, image: bytes),
-          );
-          if (text == null) return;
+      if (mode == ScanMode.food) {
+        final approved = await showDialog<bool>(
+          context: context,
+          builder: (_) => FoodPhotoReview(image: bytes),
+        );
+        if (approved != true) return;
+      } else {
+        String draft;
+        String? extractionMessage;
+        try {
+          draft = await api.extractMedicalText(file);
+          if (draft.trim().isEmpty) extractionMessage = 'No text was read. You can type the clinical details below.';
+        } on ApiException {
+          draft = '';
+          extractionMessage = 'Could not read this photo privately. You can type the clinical details below.';
         }
+        if (!mounted || !_sameAccount(owner)) return;
+        text = await showDialog<String>(
+          context: context,
+          builder: (_) => MedicalTextReview(text: draft, extractionMessage: extractionMessage, image: bytes),
+        );
+        if (text == null) return;
       }
       if (!mounted || !_sameAccount(owner)) return;
       final Widget result;
@@ -130,7 +128,7 @@ class _ScanCameraScreenState extends State<ScanCameraScreen> {
     }
   }
 
-  bool _sameAccount(String? owner) => AppConfig.useMockApi || ApiClient.instance.aiAccountId == owner;
+  bool _sameAccount(String owner) => ApiClient.instance.aiAccountId == owner;
 
   @override
   Widget build(BuildContext context) {

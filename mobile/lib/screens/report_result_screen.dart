@@ -46,13 +46,14 @@ class _ReportResultScreenState extends State<ReportResultScreen> {
     try {
       final saved = await widget.onConfirm(_reportDate, rows);
       if (!mounted) return;
-      if (saved > 0) HealthRepository.notifyChanged();
+      if (saved <= 0) {
+        throw ApiException('Could not verify the save. Check Medical records before trying again.');
+      }
+      HealthRepository.notifyChanged();
       final messenger = ScaffoldMessenger.of(context);
       Navigator.of(context).popUntil((route) => route.isFirst);
       messenger.showSnackBar(SnackBar(
-          content: Text(saved == 0
-              ? 'Demo review finished.'
-              : '$saved ${saved == 1 ? 'result' : 'results'} saved to Medical records')));
+          content: Text('$saved ${saved == 1 ? 'result' : 'results'} saved to Medical records')));
     } on ApiException catch (error) {
       if (mounted) _message(error.message);
     } catch (_) {

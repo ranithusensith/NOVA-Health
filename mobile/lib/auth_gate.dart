@@ -14,7 +14,9 @@ class AuthGate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!AppConfig.isConfigured) return const _MissingConfig();
+    if (!AppConfig.current.canConnect) {
+      return ConfigurationErrorScreen(message: AppConfig.current.problem ?? 'Real mode is unavailable.');
+    }
 
     final auth = Supabase.instance.client.auth;
     return StreamBuilder<AuthState>(
@@ -63,8 +65,10 @@ class _SignedInGateState extends State<_SignedInGate> {
   }
 }
 
-class _MissingConfig extends StatelessWidget {
-  const _MissingConfig();
+class ConfigurationErrorScreen extends StatelessWidget {
+  const ConfigurationErrorScreen({super.key, required this.message});
+
+  final String message;
 
   @override
   Widget build(BuildContext context) {
@@ -76,8 +80,7 @@ class _MissingConfig extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(NovaSpace.margin),
             child: Text(
-              'Set SUPABASE_URL and a publishable or legacy anon SUPABASE_KEY.\n\n'
-              'Run with:\nflutter run --dart-define-from-file=dart_defines.json',
+              'NOVA Health could not start.\n\n$message',
               textAlign: TextAlign.center,
               style: NovaType.body.copyWith(color: c.textPrimary),
             ),

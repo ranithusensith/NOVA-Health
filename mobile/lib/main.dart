@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_gate.dart';
 import 'config.dart';
 import 'data/app_prefs.dart';
+import 'screens/demo_home.dart';
 import 'services/emergency_service.dart';
 import 'services/reminder_service.dart';
 import 'theme/nova_settings.dart';
@@ -13,25 +14,45 @@ import 'theme/nova_theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  await AppPrefs.instance.load();
-  if (AppConfig.isConfigured) {
-    await Supabase.initialize(
-      url: AppConfig.supabaseUrl,
-      publishableKey: AppConfig.supabaseKey,
-    );
-    EmergencyService.instance.attach();
+  const config = AppConfig.current;
+  if (!config.isDemo) await AppPrefs.instance.load();
+  runApp(await prepareNovaApp(
+    config,
+    initializeSupabase: (settings) async {
+      await Supabase.initialize(url: settings.supabaseUrl, publishableKey: settings.supabaseKey);
+      EmergencyService.instance.attach();
+    },
+    initializeReminders: () async {
+      // Clear unaffiliated notifications even when the app has no configured session.
+      await ReminderService.instance.init();
+      if (config.canConnect) ReminderService.instance.attach();
+    },
+  ));
+}
+
+Future<NovaApp> prepareNovaApp(
+  AppConfig config, {
+  required Future<void> Function(AppConfig) initializeSupabase,
+  required Future<void> Function() initializeReminders,
+}) async {
+  if (config.isDemo) {
+    return const NovaApp(key: ValueKey('demo'), home: DemoHome(), demoMode: true);
   }
-  // Clear unaffiliated notifications even when the app has no configured session.
-  await ReminderService.instance.init();
-  if (AppConfig.isConfigured) ReminderService.instance.attach();
-  runApp(const NovaApp());
+  final problem = config.problem;
+  if (problem == null) await initializeSupabase(config);
+  await initializeReminders();
+  return NovaApp(
+    key: const ValueKey('real'),
+    home: problem == null ? const AuthGate() : ConfigurationErrorScreen(message: problem),
+  );
 }
 
 class NovaApp extends StatelessWidget {
-  const NovaApp({super.key, this.home = const AuthGate()});
+  const NovaApp({super.key, this.home = const AuthGate(), this.demoMode = false});
 
   /// Overridable for widget tests.
   final Widget home;
+  final bool demoMode;
 
   @override
   Widget build(BuildContext context) {
@@ -48,7 +69,7 @@ class NovaApp extends StatelessWidget {
           theme: NovaTheme.light(),
           darkTheme: NovaTheme.dark(),
           themeMode: prefs.themeMode,
-          navigatorKey: appNavigatorKey,
+          navigatorKey: demoMode ? null : appNavigatorKey,
           home: home,
         ),
       ),

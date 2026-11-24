@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../config.dart';
 import '../services/api_client.dart';
 
 const aiDisclosure =
@@ -16,7 +15,6 @@ const aiDisclosure =
     'off sharing blocks future AI requests. It cannot recall data already sent.';
 
 Future<bool> ensureAiConsent(BuildContext context) async {
-  if (AppConfig.useMockApi) return true;
   final api = ApiClient.instance;
   final owner = api.aiAccountId;
   final status = await api.aiPrivacyStatus();
@@ -191,10 +189,9 @@ class _AiPrivacyScreenState extends State<AiPrivacyScreen> {
             OutlinedButton(
                 onPressed: _refresh,
                 child: const Text('Retry loading AI settings')),
-          if (!AppConfig.useMockApi)
-            OutlinedButton(
-                onPressed: _busy ? null : _deleteChats,
-                child: const Text('Delete older NOVA chats')),
+          OutlinedButton(
+              onPressed: _busy ? null : _deleteChats,
+              child: const Text('Delete older NOVA chats')),
           if (_busy) const LinearProgressIndicator(),
           if (_message != null)
             Padding(

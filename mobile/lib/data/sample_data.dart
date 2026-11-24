@@ -1,6 +1,6 @@
 import 'care_models.dart';
 
-/// Sample data only — fictional persona Maya Perera, 28. No real personal data.
+/// The next scheduled dose shown on the home screen.
 class Medication {
   const Medication({required this.name, required this.dose, required this.time, this.occurrence, this.overdue = false});
   final String name;
@@ -23,9 +23,6 @@ class HealthSnapshot {
     this.sleepGoalMinutes = 420,
     this.steps = 0,
     this.stepsGoal = 8000,
-    this.temperatureC = 31,
-    this.weatherLabel = 'humid',
-    this.weatherTip = 'Hydrate a little more today and keep walks before 10 AM.',
     this.nextMedication,
     this.medsTakenToday = 0,
     this.medsToday = 0,
@@ -39,9 +36,6 @@ class HealthSnapshot {
   final int sleepGoalMinutes;
   final int steps;
   final int stepsGoal;
-  final int temperatureC;
-  final String weatherLabel;
-  final String weatherTip;
   final Medication? nextMedication;
   final int medsTakenToday;
   final int medsToday;
@@ -64,9 +58,6 @@ class HealthSnapshot {
         sleepGoalMinutes: sleepGoalMinutes ?? this.sleepGoalMinutes,
         steps: steps,
         stepsGoal: stepsGoal,
-        temperatureC: temperatureC,
-        weatherLabel: weatherLabel,
-        weatherTip: weatherTip,
         nextMedication: clearNextMedication ? null : (nextMedication ?? this.nextMedication),
         medsTakenToday: medsTakenToday ?? this.medsTakenToday,
         medsToday: medsToday ?? this.medsToday,
@@ -76,27 +67,7 @@ class HealthSnapshot {
   double get sleepProgress => sleepMinutes / sleepGoalMinutes;
   double get stepsProgress => steps / stepsGoal;
 
-  static const todayInsight =
-      'Shorter sleep and today\'s humidity may leave you low on energy this afternoon. '
-      'A glass of water now and a lighter walk should help.';
-
-  static const maya = HealthSnapshot(
-    firstName: 'Maya',
-    isEmpty: false,
-    waterL: 1.4,
-    sleepMinutes: 380,
-    steps: 5840,
-    nextMedication: Medication(name: 'Cetirizine', dose: '10 mg', time: '9:00 PM'),
-    medsTakenToday: 1,
-    medsToday: 2,
-  );
-
-  static const firstDay = HealthSnapshot(firstName: 'Maya', isEmpty: true);
 }
-
-/// Last 7 nights of sleep in hours, Sat → Fri.
-const sleepWeek = [6.5, 5.8, 6.3, 5.6, 6.0, 6.9, 6.3];
-const sleepWeekDays = ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
 String formatToday(DateTime d) {
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];

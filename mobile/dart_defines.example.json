@@ -1,6 +1,6 @@
 {
   "SUPABASE_URL": "https://YOUR_PROJECT_REF.supabase.co",
   "SUPABASE_KEY": "sb_publishable_xxx",
-  "API_URL": "http://10.0.2.2:8000",
+  "API_URL": "https://your-nova-backend.example.invalid",
   "USE_MOCK_API": "false"
 }

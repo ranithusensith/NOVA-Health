@@ -29,7 +29,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
         _clock = clock ?? DateTime.now;
 
   static final ReminderService instance = ReminderService(
-    accountId: () => AppConfig.isConfigured
+    accountId: () => AppConfig.current.canConnect
         ? Supabase.instance.client.auth.currentUser?.id
         : null,
     loadMedicines: (account) async => await Supabase.instance.client
