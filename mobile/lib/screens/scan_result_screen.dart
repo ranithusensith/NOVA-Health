@@ -4,7 +4,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../data/care_models.dart';
-import '../data/health_repository.dart';
+import '../data/care_repository.dart';
 import '../data/sample_data.dart';
 import '../data/scan_models.dart';
 import '../services/api_client.dart';
@@ -204,7 +204,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       final draft = [for (final group in _groups) group.toJson()];
       final confirm = widget.confirmPrescription ?? ApiClient.instance.confirmPrescription;
       final result = await confirm(scanId, draft, reviewToken);
-      if (result.activated && result.safetyCheck.completed) HealthRepository.notifyChanged();
+      if (result.activated && result.safetyCheck.completed) CareRepository.notifyMedicationsChanged();
       if (!mounted) return;
       if (!result.activated || !result.safetyCheck.completed) {
         setState(() {

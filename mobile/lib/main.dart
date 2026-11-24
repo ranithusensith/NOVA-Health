@@ -20,10 +20,10 @@ Future<void> main() async {
       publishableKey: AppConfig.supabaseKey,
     );
     EmergencyService.instance.attach();
-    // Medicine reminders (local notifications). Never blocks start-up.
-    await ReminderService.instance.init();
-    ReminderService.instance.attach();
   }
+  // Clear unaffiliated notifications even when the app has no configured session.
+  await ReminderService.instance.init();
+  if (AppConfig.isConfigured) ReminderService.instance.attach();
   runApp(const NovaApp());
 }
 

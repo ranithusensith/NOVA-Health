@@ -126,8 +126,8 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'NOVA sends a notification at each time you set for a medicine, and stops when a '
-                          'course ends. Everything stays on this phone.',
+                          'NOVA schedules reminders within each medicine’s confirmed course dates. '
+                          'Reminders are stored on this phone.',
                           style: NovaType.subhead.copyWith(color: c.textSecondary),
                         ),
                         if (enabled) ...[
@@ -150,16 +150,17 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text('Show medicine names',
+                              Text('Include medicine details',
                                   style: NovaType.headline.copyWith(color: c.textPrimary)),
                               const SizedBox(height: 2),
-                              Text('Turn off to keep names off your lock screen.',
+                              Text('Off by default. If enabled, names and doses may appear on your lock screen. '
+                                  'Your phone controls notification previews.',
                                   style: NovaType.footnote.copyWith(color: c.textSecondary)),
                             ],
                           ),
                         ),
                         Semantics(
-                          label: 'Show medicine names in reminders',
+                          label: 'Include medicine names and doses in reminders',
                           toggled: _service.showNames,
                           child: CupertinoSwitch(
                             value: _service.showNames,
@@ -212,8 +213,8 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
                   ),
                   const SizedBox(height: NovaSpace.gap),
                   Text(
-                    'Reminders are set from the times on your medicines. Open NOVA Health once in a while so '
-                    'they stay up to date. Guidance, not medical advice.',
+                    'NOVA schedules a limited number of reminders ahead. Open the app regularly and after '
+                    'changing time zones to refresh them. Guidance, not medical advice.',
                     style: NovaType.footnote.copyWith(color: c.textSecondary),
                   ),
                 ],
