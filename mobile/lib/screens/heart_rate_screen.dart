@@ -1,5 +1,3 @@
-import 'dart:io' show Platform;
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,7 +13,7 @@ import '../widgets/glass.dart';
 import '../widgets/pressable.dart';
 import '../widgets/states.dart';
 
-const _kLastSync = 'heart.lastSync';
+String _lastSyncKey(String accountId) => 'heart.lastSync.$accountId';
 
 void openHeartRate(BuildContext context) {
   Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HeartRateScreen()));
@@ -66,10 +64,13 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
 
   Future<void> _load() async {
     try {
-      final readings = await ProfileRepository.instance.heartReadings(days: 7);
+      final repository = ProfileRepository.instance;
+      final accountId = repository.currentAccountId;
+      if (accountId == null) throw HealthSyncException('Sign in to view your heart rate readings.');
+      final readings = await repository.heartReadings(days: 7);
       final prefs = await SharedPreferences.getInstance();
-      final last = DateTime.tryParse(prefs.getString(_kLastSync) ?? '');
-      if (!mounted) return;
+      final last = DateTime.tryParse(prefs.getString(_lastSyncKey(accountId)) ?? '');
+      if (!mounted || repository.currentAccountId != accountId) return;
       setState(() {
         _readings = readings;
         _lastSync = last?.toLocal();
@@ -86,16 +87,26 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
       _syncing = true;
       _syncMessage = null;
     });
+    final repository = ProfileRepository.instance;
+    final sync = HeartSync.instance;
+    String? accountId;
     String message;
     try {
-      final result = await HeartSync.instance.importRecent();
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kLastSync, DateTime.now().toUtc().toIso8601String());
-      message = result.found == 0
-          ? 'Connected, but ${HeartSync.instance.sourceName} has no heart rate data for the last 7 days. '
-              'Wear your watch, or check that it shares heart rate with ${HeartSync.instance.sourceName}.'
-          : 'Imported ${result.found} readings from ${HeartSync.instance.sourceName}.';
-      await _load();
+      accountId = repository.currentAccountId;
+      final result = await sync.importRecent();
+      if (result.found == 0) {
+        message = 'No readable heart rate samples were found in the last 7 days. Check that '
+            '${sync.sourceName} has readings and that NOVA Health has Heart Rate access.';
+      } else {
+        if (accountId != null && repository.currentAccountId == accountId) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_lastSyncKey(accountId), DateTime.now().toUtc().toIso8601String());
+        }
+        message = result.imported == 0
+            ? 'These readings are already saved in NOVA Health.'
+            : 'Imported ${result.imported} ${result.imported == 1 ? 'reading' : 'readings'} from ${sync.sourceName}.';
+        await _load();
+      }
     } on HealthSyncException catch (e) {
       message = e.message;
     } catch (e) {
@@ -104,7 +115,7 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
     if (mounted) {
       setState(() {
         _syncing = false;
-        _syncMessage = message;
+        _syncMessage = accountId == null || repository.currentAccountId == accountId ? message : null;
       });
     }
   }
@@ -304,7 +315,7 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
 
   Widget _connectCard(NovaColors c) {
     final sync = HeartSync.instance;
-    final ios = Platform.isIOS;
+    final ios = Theme.of(context).platform == TargetPlatform.iOS;
     return NovaCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -330,9 +341,11 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
           ),
           const SizedBox(height: 12),
           Text(
-            ios
-                ? 'Your Apple Watch saves heart rate to Apple Health. NOVA reads it from there (read only) '
-                    'and never changes your Health data.'
+            !sync.supported
+                ? 'Heart rate import is available on supported iOS and Android devices. You can still add a reading by hand.'
+                : ios
+                ? 'Import heart rate from Apple Health, including readings from an Apple Watch, into your '
+                    'NOVA account. NOVA has read-only access to Heart Rate.'
                 : 'Samsung Galaxy Watch, Fitbit, Garmin and other watches can share heart rate with Health '
                     'Connect through their own apps. NOVA reads it from there (read only).',
             style: NovaType.footnote.copyWith(color: c.textSecondary),

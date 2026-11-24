@@ -1,5 +1,5 @@
-import 'dart:io' show Platform;
-
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:health/health.dart';
 
 import '../data/profile_models.dart';
@@ -16,79 +16,147 @@ class HealthSyncException implements Exception {
 class SyncResult {
   const SyncResult({required this.found, required this.imported});
 
-  /// Readings found in the health app (after thinning).
+  /// Readable samples found after filtering and thinning.
   final int found;
 
-  /// Readings sent to NOVA (duplicates are ignored by the database).
+  /// New readings saved to NOVA. Existing readings are ignored by the database.
   final int imported;
 }
 
-/// Reads heart rate from Apple Health (iPhone, including Apple Watch data) or
-/// Health Connect (Android: Samsung Galaxy Watch, Fitbit, Garmin and others
-/// that share data with Health Connect). Read only; NOVA never writes to it.
+/// Imports heart rate from Apple Health or Health Connect when the user asks.
 class HeartSync {
-  HeartSync._();
-  static final HeartSync instance = HeartSync._();
+  HeartSync({
+    Health? health,
+    ProfileRepository? repository,
+    TargetPlatform? platform,
+    DateTime Function()? now,
+  })  : _health = health ?? Health(),
+        _repository = repository ?? ProfileRepository.instance,
+        _platform = platform ?? defaultTargetPlatform,
+        _now = now ?? DateTime.now;
 
-  final Health _health = Health();
+  static final HeartSync instance = HeartSync();
+  static const _healthKit = MethodChannel('nova_health/healthkit');
+  static const _types = [HealthDataType.HEART_RATE];
+  static const _access = [HealthDataAccess.READ];
+
+  final Health _health;
+  final ProfileRepository _repository;
+  final TargetPlatform _platform;
+  final DateTime Function() _now;
   bool _configured = false;
 
-  bool get supported => Platform.isIOS || Platform.isAndroid;
-  String get sourceName => Platform.isIOS ? 'Apple Health' : 'Health Connect';
-  String get device => Platform.isIOS ? 'apple_health' : 'health_connect';
+  bool get _isAppleHealth => _platform == TargetPlatform.iOS;
+  bool get supported =>
+      !kIsWeb && (_isAppleHealth || _platform == TargetPlatform.android);
+  String get sourceName => _isAppleHealth ? 'Apple Health' : 'Health Connect';
+  String get _device => _isAppleHealth ? 'apple_health' : 'health_connect';
 
   Future<SyncResult> importRecent({int days = 7}) async {
     if (!supported) {
-      throw HealthSyncException('Heart rate sync works on iPhone and Android phones.');
+      throw HealthSyncException(
+          'Heart rate import is available on supported iOS and Android devices. You can still add a reading by hand.');
+    }
+    final accountId = _repository.currentAccountId;
+    if (accountId == null) {
+      throw HealthSyncException(
+          'Sign in to NOVA Health before importing readings.');
     }
 
-    const types = [HealthDataType.HEART_RATE];
+    final end = _now();
+    final start = end.subtract(Duration(days: days));
+    final points = await _read(start, end, accountId);
+    _requireSameAccount(accountId);
+    final samples = _selectSamples(points, start, end);
+    if (samples.isEmpty) return const SyncResult(found: 0, imported: 0);
+
+    final int imported;
     try {
+      imported = await _repository.importHeartSamples(samples,
+          device: _device, accountId: accountId);
+    } catch (_) {
+      _requireSameAccount(accountId);
+      throw HealthSyncException(
+          'Could not finish saving readings to your NOVA account. Check your saved readings before trying again.');
+    }
+    _requireSameAccount(accountId);
+    return SyncResult(found: samples.length, imported: imported);
+  }
+
+  Future<List<HealthDataPoint>> _read(
+      DateTime start, DateTime end, String accountId) async {
+    try {
+      final available = _isAppleHealth
+          ? await _healthKit.invokeMethod<bool>('isHealthDataAvailable') == true
+          : await _health.isHealthConnectAvailable();
+      if (!available) {
+        throw HealthSyncException(
+            '$sourceName is unavailable on this device. You can still add a reading by hand.');
+      }
       if (!_configured) {
         await _health.configure();
         _configured = true;
       }
+      _requireSameAccount(accountId);
 
-      final granted = await _health.requestAuthorization(types, permissions: [HealthDataAccess.READ]);
-      if (!granted) {
-        throw HealthSyncException(
-          'Heart rate access was not allowed. Allow it for NOVA Health in $sourceName and try again.',
-        );
+      // HealthKit does not disclose read permission. Its authorization result
+      // only confirms the request completed. The query may still return no data.
+      final alreadyAllowed = !_isAppleHealth &&
+          await _health.hasPermissions(_types, permissions: _access) == true;
+      if (!alreadyAllowed &&
+          !await _health.requestAuthorization(_types, permissions: _access)) {
+        throw HealthSyncException(_isAppleHealth
+            ? 'Could not complete the Apple Health access request. Unlock your device and check NOVA Health’s Heart Rate access in the Health app.'
+            : 'Heart rate access was not allowed. Allow it for NOVA Health in Health Connect and try again.');
       }
-
-      final now = DateTime.now();
-      final points = await _health.getHealthDataFromTypes(
-        types: types,
-        startTime: now.subtract(Duration(days: days)),
-        endTime: now,
-      );
-
-      // Watches record every few minutes. Keep one reading per 10 minutes, oldest first.
-      points.sort((a, b) => a.dateFrom.compareTo(b.dateFrom));
-      final samples = <HeartSample>[];
-      DateTime? lastKept;
-      for (final p in points) {
-        final value = p.value;
-        if (value is! NumericHealthValue) continue;
-        final bpm = value.numericValue.round();
-        if (bpm < 20 || bpm > 250) continue; // not a believable heart rate
-        if (lastKept != null && p.dateFrom.difference(lastKept).inMinutes < 10) continue;
-        lastKept = p.dateFrom;
-        samples.add(HeartSample(bpm: bpm, at: p.dateFrom));
-      }
-      // Keep the newest 1000 so one sync stays small.
-      final recent = samples.length > 1000 ? samples.sublist(samples.length - 1000) : samples;
-
-      final imported = await ProfileRepository.instance.importHeartSamples(recent, device: device);
-      return SyncResult(found: recent.length, imported: imported);
+      _requireSameAccount(accountId);
+      return await _health.getHealthDataFromTypes(
+          types: _types, startTime: start, endTime: end);
     } on HealthSyncException {
       rethrow;
-    } catch (e) {
-      throw HealthSyncException(
-        Platform.isAndroid
-            ? 'Could not reach Health Connect. Make sure it is installed and up to date, then try again.'
-            : 'Could not read Apple Health. Unlock the phone and allow Heart Rate for NOVA Health, then try again.',
-      );
+    } catch (_) {
+      _requireSameAccount(accountId);
+      throw HealthSyncException(_isAppleHealth
+          ? 'Could not read Apple Health. Unlock your device and check NOVA Health’s Heart Rate access, or add a reading by hand.'
+          : 'Could not read Health Connect. Make sure it is installed and up to date, then try again.');
     }
+  }
+
+  void _requireSameAccount(String accountId) {
+    if (_repository.currentAccountId != accountId) {
+      throw HealthSyncException(
+          'Your NOVA account changed. Start a new import from the account that should receive the readings.');
+    }
+  }
+
+  List<HeartSample> _selectSamples(
+      List<HealthDataPoint> points, DateTime start, DateTime end) {
+    final sorted = [...points]
+      ..sort((a, b) => a.dateFrom.compareTo(b.dateFrom));
+    final samples = <HeartSample>[];
+    DateTime? lastKept;
+    // Preserve the existing one-reading-per-ten-minute and 1000-reading limits.
+    for (final point in sorted) {
+      final value = point.value;
+      if (point.type != HealthDataType.HEART_RATE ||
+          point.unit != HealthDataUnit.BEATS_PER_MINUTE ||
+          point.dateFrom.isBefore(start) ||
+          point.dateFrom.isAfter(end) ||
+          value is! NumericHealthValue ||
+          !value.numericValue.isFinite) {
+        continue;
+      }
+      final bpm = value.numericValue.round();
+      if (bpm < 20 || bpm > 250) continue;
+      if (lastKept != null &&
+          point.dateFrom.difference(lastKept).inMinutes < 10) {
+        continue;
+      }
+      lastKept = point.dateFrom;
+      samples.add(HeartSample(bpm: bpm, at: point.dateFrom));
+    }
+    return samples.length > 1000
+        ? samples.sublist(samples.length - 1000)
+        : samples;
   }
 }
