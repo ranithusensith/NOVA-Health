@@ -110,6 +110,6 @@ class LabRepository {
   }
 
   Future<void> delete(String id) async {
-    await _db.from('lab_results').delete().eq('id', id);
+    await _db.from('lab_results').delete().eq('id', id).eq('user_id', _uid);
   }
 }

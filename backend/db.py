@@ -47,6 +47,8 @@ class UserDB:
         """filters use PostgREST syntax, for example {"status": "eq.confirmed"}."""
         params: dict = {"select": columns}
         params.update(filters or {})
+        owner_column = "id" if table == "profiles" else "user_id"
+        params[owner_column] = f"eq.{self.user_id}"
         if order:
             params["order"] = order
         if limit:
@@ -64,6 +66,8 @@ class UserDB:
         return data
 
     async def insert(self, table: str, rows: dict | list[dict]) -> None:
+        if any(row.get("user_id") != self.user_id for row in ([rows] if isinstance(rows, dict) else rows)):
+            raise DBError("The record must belong to the signed-in account.", status=403)
         headers = {**self._headers(), "Prefer": "return=minimal"}
         try:
             async with httpx.AsyncClient(timeout=15) as client:
