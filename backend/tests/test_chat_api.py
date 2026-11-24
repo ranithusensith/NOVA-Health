@@ -45,7 +45,7 @@ def test_chat_returns_reply_sources_without_saving_the_conversation(client, db, 
     res = post_chat(client, "How much water did I drink?", health_data=["logs"])
     assert res.status_code == 200
     data = res.json()["data"]
-    assert "1 litre" in data["reply"] and data["sources"] == ["water"] and data["emergency"] is False
+    assert "1000 mL" in data["reply"] and data["sources"] == ["water"] and data["emergency"] is False
     assert any(table == "water_logs" for table, *_ in db.selects)
     assert "chat_messages" not in {table for table, *_ in db.selects + db.inserted}
 
@@ -93,7 +93,7 @@ def test_chat_works_when_legacy_transcript_storage_is_unavailable(client, db, mo
     prompts = []
     script_llm(monkeypatch, [{"action": "final", "answer": "Ok.", "used": []}], prompts)
     res = post_chat(client, "hi", recent_questions=["Earlier question"])
-    assert res.status_code == 200 and "Ok." in res.json()["data"]["reply"]
+    assert res.status_code == 200 and "could not verify" in res.json()["data"]["reply"]
     assert "Earlier question" in prompts[0]
     assert all(table != "chat_messages" for table, *_ in db.selects)
     assert writes == []

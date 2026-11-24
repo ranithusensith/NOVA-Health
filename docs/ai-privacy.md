@@ -1,6 +1,6 @@
 # External AI privacy
 
-NOVA uses Google Gemini for assistant replies and scan drafts when the provider has been approved and the account opts in to the current disclosure. The API checks consent at entry and again before each provider request, including a retry. To withdraw, use **Profile → Privacy and consent**. Withdrawal blocks future requests after the server records it. A call already in flight can complete.
+NOVA uses Google Gemini to select assistant tools and create scan drafts when the provider has been approved and the account opts in to the current disclosure. NOVA assembles the visible assistant reply from saved observations and fixed safety rules. The API checks consent at entry and again before each provider request, including a retry. To withdraw, use **Profile → Privacy and consent**. Withdrawal blocks future requests after the server records it. A call already in flight can complete.
 
 ## Data sent to Gemini
 

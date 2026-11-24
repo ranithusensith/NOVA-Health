@@ -13,14 +13,16 @@ import 'emergency_screen.dart';
 enum ChatKind { user, ai, error, typing }
 
 class ChatItem {
-  const ChatItem._(this.kind, [this.text = '']);
+  const ChatItem._(this.kind, [this.text = '', this.sources = const []]);
   factory ChatItem.user(String t) => ChatItem._(ChatKind.user, t);
-  factory ChatItem.ai(String t) => ChatItem._(ChatKind.ai, t);
+  factory ChatItem.ai(String t, {List<String> sources = const []}) =>
+      ChatItem._(ChatKind.ai, t, sources);
   factory ChatItem.error(String t) => ChatItem._(ChatKind.error, t);
   static const typing = ChatItem._(ChatKind.typing);
 
   final ChatKind kind;
   final String text;
+  final List<String> sources;
 }
 
 /// 06 AI Assistant — iMessage-style chat with suggestion chips and a floating
@@ -36,8 +38,8 @@ class AssistantScreen extends StatefulWidget {
 }
 
 class _AssistantScreenState extends State<AssistantScreen> {
-  static const _greeting = "Hi! Ask me anything about your sleep, water, mood or medications.";
-  static const _suggestions = ['Why am I tired this week?', 'Did I drink enough today?', 'Summarise my sleep'];
+  static const _greeting = 'Ask me to summarize the health records you choose to share.';
+  static const _suggestions = ['Show my recent meal logs', 'How much water did I log today?', 'Summarise my sleep'];
   static const _transcriptLimit = 100;
 
   final _scroll = ScrollController();
@@ -103,9 +105,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
       });
       _scrollToEnd();
       final response = await api.chat(text, healthData: sharing.healthData, recentQuestions: recent);
-      reply = response.trim().isEmpty
+      final replyText = response.text.trim();
+      reply = replyText.isEmpty
           ? ChatItem.error('No reply came back. Please try again.')
-          : ChatItem.ai(response.trim());
+          : ChatItem.ai(replyText, sources: response.sources);
     } on ApiException catch (e) {
       reply = ChatItem.error(e.message);
     } catch (_) {
@@ -169,7 +172,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
                       Semantics(header: true, child: Text('Assistant', style: NovaType.largeTitle.copyWith(color: c.textPrimary))),
                       const SizedBox(height: 2),
                       const DisclaimerNote(icon: true),
-                      Text('NOVA checks for emergencies first. Questions you share are processed by Google Gemini.',
+                      Text('NOVA checks for emergencies first. Google Gemini uses shared questions to choose which records to check.',
                           style: NovaType.caption.copyWith(color: c.textSecondary)),
                       TextButton(
                         onPressed: () => openEmergency(context),
@@ -305,7 +308,18 @@ class _Bubble extends StatelessWidget {
 
     final Widget content = switch (item.kind) {
       ChatKind.user => Text(item.text, style: NovaType.body.copyWith(color: c.onPrimary)),
-      ChatKind.ai => Text(item.text, style: NovaType.body.copyWith(color: c.textPrimary)),
+      ChatKind.ai => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(item.text, style: NovaType.body.copyWith(color: c.textPrimary)),
+          if (item.sources.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('Sources: ${item.sources.join(', ')}',
+                style: NovaType.caption.copyWith(color: c.textSecondary)),
+          ],
+        ],
+      ),
       ChatKind.error => Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

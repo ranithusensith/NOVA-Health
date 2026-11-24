@@ -227,15 +227,15 @@ class ApiClient {
     return data['emergency'] == true ? data['reply'] as String : null;
   }
 
-  /// Sends a message to the AI assistant and returns its reply text.
-  Future<String> chat(String message, {List<String> healthData = const [], List<String> recentQuestions = const []}) async {
+  /// Sends a reviewed message and returns NOVA's reply and its source labels.
+  Future<AssistantReply> chat(String message, {List<String> healthData = const [], List<String> recentQuestions = const []}) async {
     final data = await _postJson('/api/v1/assistant/chat', {
       'message': message,
       'reviewed': true,
       'health_data': healthData,
       'recent_questions': recentQuestions,
     });
-    return (data['reply'] as String?) ?? '';
+    return AssistantReply.fromJson(data);
   }
 
   Future<Map<String, dynamic>> _getJson(
@@ -261,6 +261,43 @@ class ApiClient {
     return EmergencyResult.fromJson(await _getJson(
       '/api/v1/emergency/${Uri.encodeComponent(attemptId)}/status', timeout: const Duration(seconds: 10),
     ));
+  }
+}
+
+class AssistantReply {
+  const AssistantReply(this.text, {this.sources = const []});
+
+  final String text;
+  final List<String> sources;
+
+  static const _sourceLabels = {
+    'water': 'Water logs',
+    'sleep': 'Sleep logs',
+    'mood': 'Mood logs',
+    'meals': 'Meal logs',
+    'symptoms': 'Symptom logs',
+    'profile': 'Health profile',
+    'medications': 'Medication records',
+    'allergies': 'Allergy records',
+    'medicine safety': 'Medication safety checks',
+    'heart rate': 'Heart-rate records',
+    'cycle': 'Period logs',
+    'lab results': 'Lab results',
+  };
+
+  factory AssistantReply.fromJson(Map<String, dynamic> data) {
+    final raw = data['sources'];
+    final sources = <String>{};
+    if (raw is List) {
+      for (final source in raw.whereType<String>()) {
+        if (_sourceLabels[source] case final label?) sources.add(label);
+      }
+    }
+    final text = data['reply'];
+    return AssistantReply(
+      text is String ? text : '',
+      sources: List.unmodifiable(sources),
+    );
   }
 }
 
