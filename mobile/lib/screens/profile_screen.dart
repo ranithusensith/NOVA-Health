@@ -7,6 +7,7 @@ import '../data/care_repository.dart';
 import '../data/health_repository.dart';
 import '../data/profile_models.dart';
 import '../data/profile_repository.dart';
+import '../services/reminder_service.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/pressable.dart';
@@ -115,7 +116,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ],
       ),
     );
-    if (ok == true) await Supabase.instance.client.auth.signOut();
+    if (ok != true) return;
+    try {
+      final auth = Supabase.instance.client.auth;
+      await ReminderService.instance.signOut(() => auth.signOut());
+    } catch (e) {
+      if (mounted) showNovaToast(context, friendlyError(e));
+    }
   }
 
   void _showText(String title, String body) {

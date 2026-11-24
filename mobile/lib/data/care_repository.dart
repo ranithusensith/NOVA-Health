@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'care_models.dart';
@@ -17,6 +18,12 @@ import 'health_repository.dart';
 class CareRepository {
   CareRepository({SupabaseClient? client}) : _client = client;
   static final CareRepository instance = CareRepository();
+  static final medicationChanges = ValueNotifier<int>(0);
+
+  static void notifyMedicationsChanged() {
+    medicationChanges.value++;
+    HealthRepository.notifyChanged();
+  }
 
   final SupabaseClient? _client;
   SupabaseClient get _db => _client ?? Supabase.instance.client;
@@ -55,7 +62,7 @@ class CareRepository {
       'source': 'manual',
       'status': 'confirmed',
     });
-    HealthRepository.notifyChanged();
+    notifyMedicationsChanged();
   }
 
   Future<void> updateMedication(
@@ -75,7 +82,7 @@ class CareRepository {
       'end_date': endDate == null ? null : ymd(endDate),
       if (remindersEnabled != null) 'reminders_enabled': remindersEnabled,
     }).eq('id', id).eq('user_id', _uid);
-    HealthRepository.notifyChanged();
+    notifyMedicationsChanged();
   }
 
   /// Stops a medicine: it stays in history but leaves the schedule.
@@ -85,7 +92,7 @@ class CareRepository {
         .update({'status': 'ended', 'end_date': ymd(DateTime.now())})
         .eq('id', id)
         .eq('user_id', _uid);
-    HealthRepository.notifyChanged();
+    notifyMedicationsChanged();
   }
 
   // ------------------------------------------------------------ dose logs
