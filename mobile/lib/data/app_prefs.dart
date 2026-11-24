@@ -3,23 +3,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/privacy_diagnostics.dart';
 
-/// Device appearance and account-scoped daily goals stored on the phone.
+/// Device appearance preferences.
 class AppPrefs extends ChangeNotifier {
   AppPrefs._();
   static final AppPrefs instance = AppPrefs._();
 
   static const _kTheme = 'appearance.theme';
   static const _kReduceTransparency = 'appearance.reduceTransparency';
-  static String _waterGoalKey(String owner) => 'goals.$owner.waterMl';
-  static String _sleepGoalKey(String owner) => 'goals.$owner.sleepHours';
-
   SharedPreferences? _prefs;
-  String? _owner;
 
   ThemeMode themeMode = ThemeMode.system;
   bool reduceTransparency = false;
-  int waterGoalMl = 2500;
-  double sleepGoalHours = 7;
 
   Future<void> load() async {
     try {
@@ -35,17 +29,6 @@ class AppPrefs extends ChangeNotifier {
     notifyListeners();
   }
 
-  void selectAccount(String? owner) {
-    if (owner == _owner) return;
-    _owner = owner;
-    // Old device-wide goals have no owner, so never assign them to an account.
-    waterGoalMl =
-        (owner == null ? null : _prefs?.getInt(_waterGoalKey(owner))) ?? 2500;
-    sleepGoalHours =
-        (owner == null ? null : _prefs?.getDouble(_sleepGoalKey(owner))) ?? 7;
-    notifyListeners();
-  }
-
   Future<void> setThemeMode(ThemeMode mode) async {
     themeMode = mode;
     notifyListeners();
@@ -56,21 +39,5 @@ class AppPrefs extends ChangeNotifier {
     reduceTransparency = value;
     notifyListeners();
     await _prefs?.setBool(_kReduceTransparency, value);
-  }
-
-  Future<void> setWaterGoalMl(int ml) async {
-    final owner = _owner;
-    if (owner == null) return;
-    waterGoalMl = ml;
-    notifyListeners();
-    await _prefs?.setInt(_waterGoalKey(owner), ml);
-  }
-
-  Future<void> setSleepGoalHours(double hours) async {
-    final owner = _owner;
-    if (owner == null) return;
-    sleepGoalHours = hours;
-    notifyListeners();
-    await _prefs?.setDouble(_sleepGoalKey(owner), hours);
   }
 }

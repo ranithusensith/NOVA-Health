@@ -202,6 +202,9 @@ class _TrackScreenState extends State<TrackScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
+                Text('Saving again replaces the previous total for today.',
+                    style: NovaType.caption.copyWith(color: c.textSecondary)),
+                const SizedBox(height: 8),
                 NovaButton(
                   label: 'Save sleep',
                   kind: NovaButtonKind.secondary,

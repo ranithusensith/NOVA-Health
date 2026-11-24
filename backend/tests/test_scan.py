@@ -102,7 +102,7 @@ def test_food_success_and_clamping(client, monkeypatch, meal_photo):
     assert res.status_code == 200
     d = res.json()["data"]
     assert d["calories"] == 5000  # clamped
-    assert d["nutrients"] == {"protein_g": 20.0, "carbs_g": 90.0, "fat_g": 0.0}
+    assert d["nutrients"] == {"protein_g": 20.0, "carbs_g": 90.0, "fat_g": None}
 
 
 def test_food_not_food(client, monkeypatch, meal_photo):

@@ -125,8 +125,8 @@ def test_daily_report_stays_local_when_external_ai_is_available(client, monkeypa
     data = res.json()["data"]
     assert data["ai"] is False and len(provider_replies) == 1
     assert "Provider-only tip." not in data["report"]
-    assert "Water: 1.0 of 2.5 L (40%)" in data["report"]
-    assert "usual hydration plan" in data["report"]
+    assert "Water: 1 L logged" in data["report"]
+    assert "Follow any fluid instructions from your care team." in data["report"]
 
 
 def test_daily_report_ignores_an_unsafe_ai_summary(client, monkeypatch):
@@ -143,7 +143,7 @@ def test_daily_report_defaults_to_local_today(client, monkeypatch):
 def test_daily_report_numbers_come_from_the_database_not_the_ai(client, monkeypatch):
     script_llm(monkeypatch, [llm.LLMError("x", 503)])
     data = client.get("/api/v1/reports/daily?date=2026-10-24").json()["data"]
-    assert "Water: 1.0 of 2.5 L (40%)" in data["highlights"]
+    assert "Water: 1 L logged" in data["highlights"]
 
 
 # ------------------------------------------------------------ scan + safety rules

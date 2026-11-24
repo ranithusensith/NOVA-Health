@@ -3,7 +3,6 @@ Read-only tools the assistant may call. Each returns small, summarised data
 (never raw rows, never the user's name or date of birth).
 """
 
-import math
 import os
 import re
 from collections import defaultdict
@@ -12,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Awaitable, Callable
 from uuid import UUID
 
+import daily_metrics
 import lab_results
 import rules
 import safety
@@ -70,8 +70,9 @@ def _avg(values: list[float], digits: int = 1):
     return round(sum(values) / len(values), digits) if values else None
 
 
-def summarize_logs(kind: str, rows: list[dict], days: int) -> dict:
+def summarize_logs(kind: str, rows: list[dict], days: int, calendar=None) -> dict:
     out: dict = {"kind": kind, "days": days}
+    day_for = calendar.day_for if calendar else local_day
     if kind == "symptoms":
         items = []
         for r in rows[:20]:
@@ -79,7 +80,7 @@ def summarize_logs(kind: str, rows: list[dict], days: int) -> dict:
                 "name": r.get("name"),
                 "severity": r.get("severity"),
                 "status": r.get("status"),
-                "since": local_day(r["started_at"]).isoformat() if r.get("started_at") else None,
+                "since": day_for(r["started_at"]).isoformat() if r.get("started_at") else None,
             })
         out["symptoms"] = items
         out["count"] = len(items)
@@ -89,26 +90,27 @@ def summarize_logs(kind: str, rows: list[dict], days: int) -> dict:
     ts_key = "logged_at"
     for r in rows:
         if r.get(ts_key):
-            by_day[local_day(r[ts_key]).isoformat()].append(r)
+            by_day[day_for(r[ts_key]).isoformat()].append(r)
 
     if kind == "water":
-        per_day = {d: sum(int(x.get("amount_ml") or 0) for x in v) for d, v in by_day.items()}
+        per_day = {d: daily_metrics.total(v, "amount_ml") for d, v in by_day.items()}
         out["ml_per_day"] = dict(sorted(per_day.items()))
-        out["average_ml_on_logged_days"] = round(sum(per_day.values()) / len(per_day)) if per_day else None
+        known = [value for value in per_day.values() if value is not None]
+        out["average_ml_on_logged_days"] = round(sum(known) / len(known)) if known else None
     elif kind == "sleep":
-        per_day = {d: round(sum(float(x.get("hours") or 0) for x in v), 1) for d, v in by_day.items()}
+        per_day = {d: daily_metrics.sleep_hours(v) for d, v in by_day.items()}
         out["hours_per_day"] = dict(sorted(per_day.items()))
-        out["average_hours_on_logged_days"] = _avg(list(per_day.values()))
+        out["average_hours_on_logged_days"] = _avg([v for v in per_day.values() if v is not None])
     elif kind == "mood":
-        per_day = {d: [x.get("mood") for x in v] for d, v in by_day.items()}
+        per_day = {d: [daily_metrics.mood(v)] for d, v in by_day.items()}
         out["moods_per_day"] = dict(sorted(per_day.items()))
         out["low_or_bad_days"] = sum(1 for v in per_day.values() if any(m in ("low", "bad") for m in v))
     elif kind == "meals":
         per_day = {
-            d: {"kcal": sum(int(x.get("calories") or 0) for x in v), "meals": len(v)} for d, v in by_day.items()
+            d: {"kcal": daily_metrics.total(v, "calories"), "meals": len(v)} for d, v in by_day.items()
         }
         out["per_day"] = dict(sorted(per_day.items()))
-        kc = [v["kcal"] for v in per_day.values()]
+        kc = [v["kcal"] for v in per_day.values() if v["kcal"] is not None]
         out["average_kcal_on_logged_days"] = round(sum(kc) / len(kc)) if kc else None
     out["days_with_data"] = len(by_day)
     return out
@@ -218,7 +220,7 @@ async def get_allergies(db, args: dict) -> dict:
     return {"allergies": [r["name"] for r in rows if r.get("name")]}
 
 
-def _active_meds(rows: list[dict], today: date) -> list[dict]:
+def _active_meds(rows: list[dict], today: date, *, history: bool = False) -> list[dict]:
     out = []
     for m in rows:
         try:
@@ -241,23 +243,25 @@ def _active_meds(rows: list[dict], today: date) -> list[dict]:
             "times": times or [],
             "until": m.get("end_date"),
         }
+        if history:
+            med["status"] = m.get("status", "confirmed")
         if isinstance(plan := m.get("prescription_plan"), dict):
             med["prescription_plan"] = plan
         out.append(med)
     return out
 
 
-async def get_medications(db, args: dict, *, day: date | None = None, excluding: UUID | None = None) -> dict:
-    filters = {"status": "eq.confirmed"}
+async def get_medications(db, args: dict, *, day: date | None = None, excluding: UUID | None = None,
+                          history: bool = False) -> dict:
+    filters = {"status": "in.(confirmed,ended)" if history else "eq.confirmed"}
     if excluding is not None:
         filters["id"] = f"neq.{excluding}"
-    rows = await db.select(
-        "medications", "name,dosage,times,start_date,end_date,prescription_plan", filters=filters,
-    )
-    return {"medications": _active_meds(rows, day or local_today())}
+    cols = "name,dosage,times,start_date,end_date,prescription_plan"
+    rows = await db.select("medications", cols + (",status" if history else ""), filters=filters)
+    return {"medications": _active_meds(rows, day or local_today(), history=history)}
 
 
-def scheduled_doses_on(med: dict, day: date) -> int:
+def scheduled_doses_on(med: dict, day: date, *, bounds=None) -> int:
     plan = med.get("prescription_plan")
     if not plan or plan.get("kind") == "daily":
         return len(med["times"])
@@ -273,7 +277,7 @@ def scheduled_doses_on(med: dict, day: date) -> int:
         first = parse_ts(anchor)
     except (KeyError, ValueError, TypeError, AttributeError):
         return 0
-    start, end = map(parse_ts, day_bounds_utc(day))
+    start, end = bounds or tuple(map(parse_ts, day_bounds_utc(day)))
     interval = timedelta(minutes=minutes)
     before_start = max(timedelta(), start - first)
     before_end = max(timedelta(), end - first)
@@ -282,31 +286,35 @@ def scheduled_doses_on(med: dict, day: date) -> int:
     return following_end - following_start
 
 
-async def get_recent_logs(db, args: dict) -> dict:
+async def get_recent_logs(db, args: dict, *, calendar=None) -> dict:
     kind = args["kind"]
     days = args["days"]
     table, cols, ts = KINDS[kind]
-    latest = datetime.now(timezone.utc).isoformat()
-    rows = await db.select(
-        table, cols, filters={ts: f"gte.{since_utc(days)}", "and": f"({ts}.lte.{latest})"},
-        order=f"{ts}.desc", limit=500,
-    )
-    numeric_field = {"water": "amount_ml", "sleep": "hours", "meals": "calories"}.get(kind)
-    if numeric_field:
-        if len(rows) >= 500:
+    latest = utc_now()
+    start = calendar.boundaries[-days - 1].isoformat() if calendar else since_utc(days)
+    end = min(latest, calendar.boundaries[-1]) if calendar else latest
+    filters = {ts: f"gte.{start}", "and": f"({ts}.lt.{end.isoformat()})"}
+    if kind == "meals":
+        filters["status"] = "eq.confirmed"
+    rows = await db.select(table, cols, filters=filters, order=f"{ts}.desc", limit=500)
+    if kind != "symptoms" and len(rows) >= 500:
+        return {"kind": kind, "incomplete": True}
+    try:
+        if kind != "symptoms" and any(not row.get(ts) for row in rows):
             return {"kind": kind, "incomplete": True}
-        for row in rows:
-            value = row.get(numeric_field)
-            if (type(value) not in (int, float) or not math.isfinite(value)
-                    or (kind != "sleep" and type(value) is not int)
-                    or value < 0 or not row.get(ts) or (kind == "sleep" and value > 24)):
-                return {"kind": kind, "incomplete": True}
-    if kind == "sleep":
-        dates = [local_day(row[ts]) for row in rows]
-        # Without start/end times, multiple entries could overlap or be corrections.
-        if len(dates) != len(set(dates)):
-            return {"kind": kind, "conflicting": True}
-    result = summarize_logs(kind, rows, days)
+        result = summarize_logs(kind, rows, days, calendar)
+    except daily_metrics.ConflictingMeasurements:
+        return {"kind": kind, "conflicting": True}
+    except (TypeError, ValueError, KeyError):
+        return {"kind": kind, "incomplete": True}
+    values = {
+        "water": lambda: result["ml_per_day"].values(),
+        "sleep": lambda: result["hours_per_day"].values(),
+        "meals": lambda: (row["kcal"] for row in result["per_day"].values()),
+    }
+    if kind in values and any(value is None for value in values[kind]()):
+        # Partial windows cannot support a reliable whole-window claim.
+        return {"kind": kind, "incomplete": True}
     if kind == "symptoms" and (alert := _recent_urgent_symptom(rows, utc_now())):
         result["urgent"] = alert
     return result
@@ -343,22 +351,30 @@ async def recent_saved_emergency(db) -> tuple[str, str] | None:
     return _recent_urgent_symptom(rows, now)
 
 
-async def get_heart_rate(db, args: dict) -> dict:
+async def get_heart_rate(db, args: dict, *, calendar=None) -> dict:
     days = args["days"]
-    latest = datetime.now(timezone.utc).isoformat()
+    now = utc_now()
+    start = calendar.boundaries[-days - 1].isoformat() if calendar else since_utc(days)
+    end = min(now, calendar.boundaries[-1]) if calendar else now
     rows = await db.select(
         "wearable_samples", "value,recorded_at,context",
-        filters={"metric": "eq.heart_rate", "recorded_at": f"gte.{since_utc(days)}",
-                 "and": f"(recorded_at.lte.{latest})"},
+        filters={"metric": "eq.heart_rate", "recorded_at": f"gte.{start}",
+                 "and": f"(recorded_at.lt.{end.isoformat()})"},
         order="recorded_at.desc", limit=1000,
     )
+    return {"incomplete": True} if len(rows) >= 1000 else verified_heart_summary(rows)
+
+
+def verified_heart_summary(rows: list[dict]) -> dict:
     by_instant = defaultdict(set)
-    for row in rows:
-        value = row.get("value")
-        if (type(value) not in (int, float) or not math.isfinite(value)
-                or not 20 <= value <= 250 or not row.get("recorded_at")):
-            return {"incomplete": True}
-        by_instant[parse_ts(row["recorded_at"])].add(value)
+    try:
+        for row in rows:
+            value = daily_metrics.number(row.get("value"), minimum=20, maximum=250)
+            if value is None:
+                return {"incomplete": True}
+            by_instant[daily_metrics.instant(row["recorded_at"])].add(value)
+    except (TypeError, ValueError, KeyError):
+        return {"incomplete": True}
     if any(len(values) > 1 for values in by_instant.values()):
         return {"conflicting": True}
     summary = summarize_heart(rows)
@@ -465,10 +481,15 @@ def _days(v) -> int:
         return 7
 
 
-async def run_tool(name: str, raw_args, db) -> dict:
+async def run_tool(name: str, raw_args, db, *, calendar=None) -> dict:
     if name not in TOOLS:
         raise ValueError("Unknown tool. Available: " + ", ".join(TOOLS))
-    return await TOOLS[name].fn(db, clean_args(name, raw_args))
+    args = clean_args(name, raw_args)
+    if name == "get_recent_logs":
+        return await get_recent_logs(db, args, calendar=calendar)
+    if name == "get_heart_rate":
+        return await get_heart_rate(db, args, calendar=calendar)
+    return await TOOLS[name].fn(db, args)
 
 
 def source_label(name: str, args: dict) -> str:

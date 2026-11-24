@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/api_client.dart';
 import 'care_models.dart';
+import 'daily_metrics.dart';
 import 'scan_models.dart';
 import 'health_repository.dart';
 
@@ -30,8 +31,6 @@ class CareRepository {
   final SupabaseClient? _client;
   SupabaseClient get _db => _client ?? Supabase.instance.client;
   String get _uid => _db.auth.currentUser!.id;
-
-  static const _moodByLevel = ['bad', 'low', 'ok', 'good', 'great'];
 
   String _utc(DateTime local) => local.toUtc().toIso8601String();
 
@@ -157,70 +156,28 @@ class CareRepository {
   Future<List<DayStats>> history({int days = 7}) async {
     final today = dayOf(DateTime.now());
     final from = calendarDay(today, 1 - days);
-    final to = calendarDay(today, 1);
+    return _history(from, days);
+  }
 
-    final water = await _db
-        .from('water_logs')
-        .select('amount_ml,logged_at')
-        .eq('user_id', _uid)
-        .gte('logged_at', _utc(from))
-        .lt('logged_at', _utc(to));
-    final sleep = await _db
-        .from('sleep_logs')
-        .select('hours,logged_at')
-        .eq('user_id', _uid)
-        .gte('logged_at', _utc(from))
-        .lt('logged_at', _utc(to))
-        .order('logged_at');
-    final mood = await _db
-        .from('mood_logs')
-        .select('mood,logged_at')
-        .eq('user_id', _uid)
-        .gte('logged_at', _utc(from))
-        .lt('logged_at', _utc(to))
-        .order('logged_at');
-    final doses = await _doseLogs(_uid, from, to);
-
-    List<dynamic> meals = const [];
-    try {
-      meals = await _db
-          .from('meal_logs')
-          .select('calories,logged_at')
-          .eq('user_id', _uid)
-          .gte('logged_at', _utc(from))
-          .lt('logged_at', _utc(to));
-    } catch (_) {
-      // Meals are optional for history; keep going without them.
-    }
-
-    final meds = await medications(includeEnded: true);
+  Future<List<DayStats>> _history(DateTime from, int days) async {
+    final to = calendarDay(from, days);
+    final owner = _uid;
+    final water = bucketDailyRows(await dailyRows(_db, owner, 'water_logs', 'amount_ml', from, to));
+    final sleep = bucketDailyRows(await dailyRows(_db, owner, 'sleep_logs', 'hours', from, to));
+    final mood = bucketDailyRows(await dailyRows(_db, owner, 'mood_logs', 'mood', from, to));
+    final meals = bucketDailyRows(await dailyRows(_db, owner, 'meal_logs', 'calories', from, to));
+    final doses = await _doseLogs(owner, from, to);
+    final meds = await medications(includeEnded: true, accountId: owner);
+    final goals = DailyGoals.fromJson(await _db.from('profiles')
+        .select('water_goal_ml,sleep_goal_hours').eq('id', owner).maybeSingle());
 
     int indexOf(String? iso) {
       final t = DateTime.tryParse(iso ?? '');
-      if (t == null) return -1;
-      return calendarDaysBetween(from, t.toLocal());
+      return t == null ? -1 : calendarDaysBetween(from, t.toLocal());
     }
 
-    final waterMl = List<int>.filled(days, 0);
-    final sleepH = List<double?>.filled(days, null);
-    final moodL = List<int?>.filled(days, null);
     final taken = List<int>.filled(days, 0);
     final unassigned = List<int>.filled(days, 0);
-    final kcal = List<int>.filled(days, 0);
-
-    for (final r in water) {
-      final i = indexOf(r['logged_at'] as String?);
-      if (i >= 0 && i < days) waterMl[i] += (r['amount_ml'] as num).toInt();
-    }
-    for (final r in sleep) {
-      final i = indexOf(r['logged_at'] as String?);
-      if (i >= 0 && i < days) sleepH[i] = (r['hours'] as num).toDouble(); // latest wins
-    }
-    for (final r in mood) {
-      final i = indexOf(r['logged_at'] as String?);
-      final level = _moodByLevel.indexOf((r['mood'] as String?) ?? '');
-      if (i >= 0 && i < days && level >= 0) moodL[i] = level; // latest wins
-    }
     for (final r in doses) {
       final wallTime = r['scheduled_local_at'] as String?;
       final i = wallTime == null
@@ -234,37 +191,37 @@ class CareRepository {
         }
       }
     }
-    for (final r in meals) {
-      final i = indexOf((r as Map)['logged_at'] as String?);
-      if (i >= 0 && i < days) kcal[i] += ((r['calories'] as num?) ?? 0).toInt();
-    }
-
     return [
       for (var i = 0; i < days; i++)
-        DayStats(
-          day: calendarDay(from, i),
-          waterMl: waterMl[i],
-          sleepHours: sleepH[i],
-          moodLevel: moodL[i],
-          dosesTaken: taken[i],
-          unassignedDoseLogs: unassigned[i],
-          dosesScheduled: meds.fold(
-            0,
-            (sum, m) => sum + m.dosesOn(calendarDay(from, i), includeEnded: true).length,
-          ),
-          calories: kcal[i],
-        ),
+        _dayStats(calendarDay(from, i), water, sleep, mood, meals, goals, taken[i], unassigned[i], meds),
     ];
   }
 
-  /// Stats for a single day (used by the daily report).
-  Future<DayStats> dayStats(DateTime day) async {
-    final today = dayOf(DateTime.now());
-    final back = calendarDaysBetween(day, today);
-    if (back < 0) return DayStats(day: dayOf(day));
-    final list = await history(days: back + 1);
-    return list.first;
-  }
+  DayStats _dayStats(
+    DateTime day,
+    Map<DateTime, List<Map<String, dynamic>>>? water,
+    Map<DateTime, List<Map<String, dynamic>>>? sleep,
+    Map<DateTime, List<Map<String, dynamic>>>? mood,
+    Map<DateTime, List<Map<String, dynamic>>>? meals,
+    DailyGoals goals,
+    int taken,
+    int unassigned,
+    List<MedicationRecord> meds,
+  ) => DayStats(
+    day: day,
+    waterMl: dailyTotal(water?[day], 'amount_ml'),
+    waterGoalMl: goals.waterMl,
+    sleepHours: dailySleep(sleep?[day]),
+    sleepGoalHours: goals.sleepHours,
+    moodLevel: dailyMood(mood?[day]),
+    dosesTaken: taken,
+    unassignedDoseLogs: unassigned,
+    dosesScheduled: meds.fold(0, (sum, med) => sum + med.dosesOn(day, includeEnded: true).length),
+    mealCount: meals == null ? null : meals[day]?.length ?? 0,
+    calories: dailyTotal(meals?[day], 'calories'),
+  );
+
+  Future<DayStats> dayStats(DateTime day) async => (await _history(dayOf(day), 1)).single;
 
   // ------------------------------------------------------------ emergency contacts
 

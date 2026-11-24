@@ -25,10 +25,10 @@ class FoodResultScreen extends StatefulWidget {
 }
 
 class _FoodResultScreenState extends State<FoodResultScreen> {
-  static String _fmt(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+  static String _fmt(double? value) => value == null ? '' : value.toStringAsFixed(value == value.roundToDouble() ? 0 : 1);
 
   late final TextEditingController _description = TextEditingController(text: widget.scan.description);
-  late final TextEditingController _calories = TextEditingController(text: '${widget.scan.calories}');
+  late final TextEditingController _calories = TextEditingController(text: widget.scan.calories?.toString() ?? '');
   late final TextEditingController _protein = TextEditingController(text: _fmt(widget.scan.proteinG));
   late final TextEditingController _carbs = TextEditingController(text: _fmt(widget.scan.carbsG));
   late final TextEditingController _fat = TextEditingController(text: _fmt(widget.scan.fatG));
@@ -43,7 +43,10 @@ class _FoodResultScreenState extends State<FoodResultScreen> {
     super.dispose();
   }
 
-  double _num(TextEditingController c) => double.tryParse(c.text.trim().replaceAll(',', '.')) ?? 0;
+  double? _number(TextEditingController controller) {
+    final value = double.tryParse(controller.text.trim().replaceAll(',', '.'));
+    return value != null && value.isFinite && value >= 0 ? value : null;
+  }
 
   Future<void> _confirm() async {
     if (_saving) return;
@@ -60,11 +63,11 @@ class _FoodResultScreenState extends State<FoodResultScreen> {
       await db.from('meal_logs').insert({
         'user_id': db.auth.currentUser!.id,
         'description': description,
-        'calories': _num(_calories).round(),
+        'calories': _number(_calories)?.round(),
         'nutrients': {
-          'protein_g': _num(_protein),
-          'carbs_g': _num(_carbs),
-          'fat_g': _num(_fat),
+          'protein_g': _number(_protein),
+          'carbs_g': _number(_carbs),
+          'fat_g': _number(_fat),
         },
         'source': 'scan',
         'status': 'confirmed', // the user has just confirmed these values

@@ -130,20 +130,20 @@ class FoodScan {
   });
 
   final String description;
-  final int calories;
-  final double proteinG;
-  final double carbsG;
-  final double fatG;
+  final int? calories;
+  final double? proteinG;
+  final double? carbsG;
+  final double? fatG;
   final double confidence;
 
   factory FoodScan.fromJson(Map<String, dynamic> j) {
     final n = ((j['nutrients'] as Map?) ?? const {}).cast<String, dynamic>();
     return FoodScan(
       description: (j['description'] as String?) ?? '',
-      calories: (j['calories'] as num?)?.toInt() ?? 0,
-      proteinG: (n['protein_g'] as num?)?.toDouble() ?? 0,
-      carbsG: (n['carbs_g'] as num?)?.toDouble() ?? 0,
-      fatG: (n['fat_g'] as num?)?.toDouble() ?? 0,
+      calories: (j['calories'] as num?)?.toInt(),
+      proteinG: (n['protein_g'] as num?)?.toDouble(),
+      carbsG: (n['carbs_g'] as num?)?.toDouble(),
+      fatG: (n['fat_g'] as num?)?.toDouble(),
       confidence: (j['confidence'] as num?)?.toDouble() ?? 0,
     );
   }

@@ -4,13 +4,11 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nova_health/auth_gate.dart';
-import 'package:nova_health/data/app_prefs.dart';
 import 'package:nova_health/main.dart';
 import 'package:nova_health/screens/assistant_screen.dart';
 import 'package:nova_health/services/api_client.dart';
 import 'package:nova_health/services/privacy_diagnostics.dart';
 import 'package:nova_health/theme/nova_theme.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class _ChatApi implements ApiClient {
   @override
@@ -225,27 +223,6 @@ void main() {
     await _submit(tester, 'Synthetic other account question', history: true);
     expect(api.history.last, isEmpty);
     await tester.pumpWidget(const SizedBox());
-  });
-
-  test('daily goals do not carry over to a different or signed-out account',
-      () async {
-    SharedPreferences.setMockInitialValues({
-      'goals.waterMl': 3300,
-      'goals.sleepHours': 9.5,
-    });
-    final prefs = AppPrefs.instance;
-    await prefs.load();
-    addTearDown(() => prefs.selectAccount(null));
-    prefs.selectAccount('synthetic-first-account');
-    expect((prefs.waterGoalMl, prefs.sleepGoalHours), (2500, 7));
-    await prefs.setWaterGoalMl(3200);
-    await prefs.setSleepGoalHours(8.5);
-    prefs.selectAccount('synthetic-other-account');
-    expect((prefs.waterGoalMl, prefs.sleepGoalHours), (2500, 7));
-    prefs.selectAccount(null);
-    expect((prefs.waterGoalMl, prefs.sleepGoalHours), (2500, 7));
-    prefs.selectAccount('synthetic-first-account');
-    expect((prefs.waterGoalMl, prefs.sleepGoalHours), (3200, 8.5));
   });
 
   test('framework and asynchronous exception reporting emits fixed text', () {

@@ -4,7 +4,6 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
-import 'data/app_prefs.dart';
 import 'data/care_models.dart';
 import 'data/care_repository.dart';
 import 'data/health_repository.dart';
@@ -87,13 +86,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   /// Reloads today's data from Supabase (called after every log).
   Future<void> _load() async {
     final version = ++_loadVersion;
-    final prefs = AppPrefs.instance;
     try {
       var data = await HealthRepository.instance.loadToday();
-      data = data.copyWith(
-        waterGoalL: prefs.waterGoalMl / 1000,
-        sleepGoalMinutes: (prefs.sleepGoalHours * 60).round(),
-      );
       // Today's dose timeline (taken / due / missed) from medication_logs.
       try {
         final slots = await CareRepository.instance.todaySchedule();

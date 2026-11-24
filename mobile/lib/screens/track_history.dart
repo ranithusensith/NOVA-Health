@@ -1,7 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
-import '../data/app_prefs.dart';
 import '../data/care_models.dart';
 import '../data/care_repository.dart';
 import '../data/health_repository.dart';
@@ -30,22 +29,16 @@ class _TrackHistoryState extends State<TrackHistory> {
   void initState() {
     super.initState();
     HealthRepository.changes.addListener(_reload);
-    AppPrefs.instance.addListener(_rebuild);
   }
 
   @override
   void dispose() {
     HealthRepository.changes.removeListener(_reload);
-    AppPrefs.instance.removeListener(_rebuild);
     super.dispose();
   }
 
   void _reload() {
     if (mounted) setState(() => _future = CareRepository.instance.history(days: 7));
-  }
-
-  void _rebuild() {
-    if (mounted) setState(() {});
   }
 
   @override
@@ -86,7 +79,6 @@ class _TrackHistoryState extends State<TrackHistory> {
 
   Widget _today(BuildContext context, DayStats d) {
     final c = context.nova;
-    final prefs = AppPrefs.instance;
     const moods = ['Awful', 'Low', 'Okay', 'Good', 'Great'];
     Widget tile(IconData icon, Color color, String label, String value) => Expanded(
           child: Container(
@@ -108,7 +100,7 @@ class _TrackHistoryState extends State<TrackHistory> {
         children: [
           Row(children: [
             tile(Icons.water_drop_outlined, c.water, 'Water',
-                '${(d.waterMl / 1000).toStringAsFixed(1)} / ${(prefs.waterGoalMl / 1000).toStringAsFixed(1)} L'),
+                d.waterMl == null ? 'Unknown' : '${d.waterMl} mL'),
             const SizedBox(width: 10),
             tile(Icons.bedtime_outlined, c.sleep, 'Sleep', d.sleepHours == null ? '—' : '${d.sleepHours!.toStringAsFixed(1)} h'),
           ]),
@@ -129,16 +121,16 @@ class _TrackHistoryState extends State<TrackHistory> {
 
   Widget _week(BuildContext context, List<DayStats> days) {
     final c = context.nova;
-    final prefs = AppPrefs.instance;
     final labels = [for (final d in days) weekdayShort(d.day)];
 
-    final water = [for (final d in days) d.waterMl / 1000];
-    final waterAvg = water.reduce((a, b) => a + b) / water.length;
-    final waterGoalDays = days.where((d) => d.waterMl >= prefs.waterGoalMl).length;
+    final water = [for (final d in days) d.waterMl == null ? null : d.waterMl! / 1000];
+    final loggedWater = water.whereType<double>().toList();
+    final waterAvg = loggedWater.isEmpty ? null : loggedWater.reduce((a, b) => a + b) / loggedWater.length;
 
-    final sleepLogged = [for (final d in days) if (d.sleepHours != null) d.sleepHours!];
-    final sleep = [for (final d in days) d.sleepHours ?? 0];
+    final sleep = [for (final d in days) d.sleepHours];
+    final sleepLogged = sleep.whereType<double>().toList();
     final sleepAvg = sleepLogged.isEmpty ? null : sleepLogged.reduce((a, b) => a + b) / sleepLogged.length;
+    final sleepGoal = days.last.sleepGoalHours;
 
     final moods = [for (final d in days) d.moodLevel];
     final moodLogged = moods.whereType<int>().toList();
@@ -155,24 +147,25 @@ class _TrackHistoryState extends State<TrackHistory> {
           icon: Icons.water_drop_outlined,
           color: c.water,
           title: 'Water',
-          goalLabel: 'Goal ${(prefs.waterGoalMl / 1000).toStringAsFixed(1)} L',
+          goalLabel: days.last.waterGoalMl == null ? '' : 'Target ${days.last.waterGoalMl} mL',
           chart: SleepBarChart(
             values: water,
             labels: labels,
-            goal: prefs.waterGoalMl / 1000,
+            goal: null,
             color: c.water,
             semanticTitle: 'Water per day',
             unit: 'litres',
           ),
-          summary: 'Avg ${waterAvg.toStringAsFixed(1)} L a day · goal met on $waterGoalDays of 7 days',
+          summary: waterAvg == null ? 'No available water totals'
+              : 'Avg ${waterAvg.toStringAsFixed(2)} L on ${loggedWater.length} logged days',
         ),
         const SizedBox(height: 12),
         _ChartCard(
           icon: Icons.bedtime_outlined,
           color: c.sleep,
           title: 'Sleep',
-          goalLabel: 'Goal ${prefs.sleepGoalHours.toStringAsFixed(prefs.sleepGoalHours % 1 == 0 ? 0 : 1)} h',
-          chart: SleepBarChart(values: sleep, labels: labels, goal: prefs.sleepGoalHours, color: c.sleep),
+          goalLabel: sleepGoal == null ? '' : 'Goal $sleepGoal h',
+          chart: SleepBarChart(values: sleep, labels: labels, goal: sleepGoal, color: c.sleep),
           summary: sleepAvg == null
               ? 'No sleep logged this week'
               : 'Avg ${hm(sleepAvg)} on ${sleepLogged.length} logged night${sleepLogged.length == 1 ? '' : 's'}',

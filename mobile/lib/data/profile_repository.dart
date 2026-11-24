@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'care_models.dart';
 import 'health_repository.dart';
 import 'profile_models.dart';
 
@@ -74,13 +75,15 @@ class ProfileRepository {
 
   // ------------------------------------------------------------ heart rate
   Future<List<HeartReading>> heartReadings({int days = 7, int limit = 300}) async {
-    final since = DateTime.now().subtract(Duration(days: days)).toUtc().toIso8601String();
+    final now = DateTime.now();
+    final since = calendarDay(now, 1 - days).toUtc().toIso8601String();
     final rows = await _db
         .from('wearable_samples')
         .select('id,value,recorded_at,context,device')
         .eq('user_id', _uid)
         .eq('metric', 'heart_rate')
         .gte('recorded_at', since)
+        .lt('recorded_at', now.toUtc().toIso8601String())
         .order('recorded_at', ascending: false)
         .limit(limit);
     return [

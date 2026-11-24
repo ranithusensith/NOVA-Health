@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'care_models.dart';
+import 'daily_metrics.dart';
 import 'sample_data.dart';
 
 class _Dose {
@@ -42,37 +43,43 @@ class HealthRepository {
     notifyChanged();
   }
 
+  Future<DailyGoals> loadDailyGoals() async {
+    final profile = await _db.from('profiles')
+        .select('water_goal_ml,sleep_goal_hours').eq('id', _uid).single();
+    return DailyGoals.fromJson(profile);
+  }
+
+  Future<DailyGoals> saveDailyGoal({required String accountId, required bool water, required num? value}) async {
+    if (_db.auth.currentUser?.id != accountId) throw StateError('Account changed');
+    final profile = await _db.from('profiles')
+        .update({water ? 'water_goal_ml' : 'sleep_goal_hours': value})
+        .eq('id', accountId).select('water_goal_ml,sleep_goal_hours').single();
+    if (_db.auth.currentUser?.id != accountId) throw StateError('Account changed');
+    notifyChanged();
+    return DailyGoals.fromJson(profile);
+  }
+
   /// Builds today's snapshot for the Home screen from real data.
   Future<HealthSnapshot> loadToday() async {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    final startOfDay = today.toUtc().toIso8601String();
-
-    final water = await _db
-        .from('water_logs')
-        .select('amount_ml')
-        .eq('user_id', _uid)
-        .gte('logged_at', startOfDay);
-
-    final sleep = await _db
-        .from('sleep_logs')
-        .select('hours')
-        .eq('user_id', _uid)
-        .gte('logged_at', startOfDay)
-        .order('logged_at', ascending: false)
-        .limit(1);
+    final owner = _uid;
+    final window = dailyWindow(today);
+    final water = await dailyRows(_db, owner, 'water_logs', 'amount_ml', window.start, window.end);
+    final sleep = await dailyRows(_db, owner, 'sleep_logs', 'hours', window.start, window.end);
 
     final meds = await _db
         .from('medications')
         .select('name,dosage,times,start_date,end_date,prescription_plan')
-        .eq('user_id', _uid)
+        .eq('user_id', owner)
         .eq('status', 'confirmed');
 
     final profile =
-        await _db.from('profiles').select('full_name').eq('id', _uid).maybeSingle();
+        await _db.from('profiles').select('full_name,water_goal_ml,sleep_goal_hours').eq('id', owner).maybeSingle();
 
-    final waterMl = water.fold<int>(0, (sum, row) => sum + (row['amount_ml'] as num).toInt());
-    final sleepMinutes = sleep.isEmpty ? 0 : ((sleep.first['hours'] as num) * 60).round();
+    final waterMl = dailyTotal(water, 'amount_ml');
+    final sleepHours = dailySleep(sleep);
+    final goals = DailyGoals.fromJson(profile);
 
     final fullName = ((profile?['full_name'] as String?) ?? '').trim();
     final firstName = fullName.isEmpty ? 'there' : fullName.split(' ').first;
@@ -103,9 +110,11 @@ class HealthRepository {
 
     return HealthSnapshot(
       firstName: firstName,
-      isEmpty: waterMl == 0 && sleepMinutes == 0 && meds.isEmpty,
-      waterL: waterMl / 1000,
-      sleepMinutes: sleepMinutes,
+      isEmpty: waterMl == null && sleepHours == null && meds.isEmpty,
+      waterL: waterMl == null ? null : waterMl / 1000,
+      waterGoalL: goals.waterMl == null ? null : goals.waterMl! / 1000,
+      sleepMinutes: sleepHours == null ? null : (sleepHours * 60).round(),
+      sleepGoalMinutes: goals.sleepHours == null ? null : (goals.sleepHours! * 60).round(),
       nextMedication: next,
       medsToday: doses.length,
     );

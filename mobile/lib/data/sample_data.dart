@@ -17,12 +17,12 @@ class HealthSnapshot {
   const HealthSnapshot({
     required this.firstName,
     required this.isEmpty,
-    this.waterL = 0,
-    this.waterGoalL = 2.5,
-    this.sleepMinutes = 0,
-    this.sleepGoalMinutes = 420,
-    this.steps = 0,
-    this.stepsGoal = 8000,
+    this.waterL,
+    this.waterGoalL,
+    this.sleepMinutes,
+    this.sleepGoalMinutes,
+    this.steps,
+    this.stepsGoal,
     this.nextMedication,
     this.medsTakenToday = 0,
     this.medsToday = 0,
@@ -30,20 +30,18 @@ class HealthSnapshot {
 
   final String firstName;
   final bool isEmpty;
-  final double waterL;
-  final double waterGoalL;
-  final int sleepMinutes;
-  final int sleepGoalMinutes;
-  final int steps;
-  final int stepsGoal;
+  final double? waterL;
+  final double? waterGoalL;
+  final int? sleepMinutes;
+  final int? sleepGoalMinutes;
+  final int? steps;
+  final int? stepsGoal;
   final Medication? nextMedication;
   final int medsTakenToday;
   final int medsToday;
 
   HealthSnapshot copyWith({
     bool? isEmpty,
-    double? waterGoalL,
-    int? sleepGoalMinutes,
     Medication? nextMedication,
     bool clearNextMedication = false,
     int? medsTakenToday,
@@ -53,9 +51,9 @@ class HealthSnapshot {
         firstName: firstName,
         isEmpty: isEmpty ?? this.isEmpty,
         waterL: waterL,
-        waterGoalL: waterGoalL ?? this.waterGoalL,
+        waterGoalL: waterGoalL,
         sleepMinutes: sleepMinutes,
-        sleepGoalMinutes: sleepGoalMinutes ?? this.sleepGoalMinutes,
+        sleepGoalMinutes: sleepGoalMinutes,
         steps: steps,
         stepsGoal: stepsGoal,
         nextMedication: clearNextMedication ? null : (nextMedication ?? this.nextMedication),
@@ -63,9 +61,9 @@ class HealthSnapshot {
         medsToday: medsToday ?? this.medsToday,
       );
 
-  double get waterProgress => waterL / waterGoalL;
-  double get sleepProgress => sleepMinutes / sleepGoalMinutes;
-  double get stepsProgress => steps / stepsGoal;
+  double? get waterProgress => waterL == null || waterGoalL == null ? null : waterL! / waterGoalL!;
+  double? get sleepProgress => sleepMinutes == null || sleepGoalMinutes == null ? null : sleepMinutes! / sleepGoalMinutes!;
+  double? get stepsProgress => steps == null || stepsGoal == null ? null : steps! / stepsGoal!;
 
 }
 
