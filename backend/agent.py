@@ -172,6 +172,8 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
         step = await llm.generate_json(
             build_prompt(question, history, notes, observations, allowed_tools=allowed_tools),
             system=SYSTEM, authorize=authorize)
+        if not isinstance(step, dict):
+            raise llm.InvalidLLMResponse()
         action = step.get("action")
 
         if action == "final" and isinstance(step.get("answer"), str) and step["answer"].strip():
@@ -217,11 +219,11 @@ async def run_agent(question: str, db, *, history: list[dict] | None = None,
         step = await llm.generate_json(
             build_prompt(question, history, notes, observations, final_only=True, allowed_tools=allowed_tools),
             system=SYSTEM, authorize=authorize)
-        if isinstance(step.get("answer"), str) and step["answer"].strip():
+        if (isinstance(step, dict) and step.get("action") == "final"
+                and isinstance(step.get("answer"), str) and step["answer"].strip()):
             answer = step["answer"]
         else:
-            answer = ("I could not finish that. Please ask again in a simpler way, "
-                      "or check your logs in the app.")
+            raise llm.InvalidLLMResponse()
 
     answer = safety.redact_chat(answer, identifiers)
     notes = safety.relevant_notes(notes, question, answer)

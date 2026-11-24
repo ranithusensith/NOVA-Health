@@ -55,10 +55,12 @@ def test_rejected_sessions_never_reach_database(supabase, header):
     assert paths == (["/auth/v1/user"] if header in {"Bearer invalid", "Bearer expired"} else [])
 
 
-@pytest.mark.parametrize("token", ["outage", "invalid-user-response"])
-def test_auth_verification_failure_never_reaches_database(supabase, token):
+@pytest.mark.parametrize("token,status,code", [
+    ("outage", 503, "AUTH_UNAVAILABLE"), ("invalid-user-response", 502, "AUTH_RESPONSE_INVALID"),
+])
+def test_auth_verification_failure_never_reaches_database(supabase, token, status, code):
     response = TestClient(main.app).get("/api/v1/privacy/ai", headers={"Authorization": f"Bearer {token}"})
-    assert response.status_code == 503
+    assert response.status_code == status and response.json()["error"]["code"] == code
     assert [request.url.path for request in supabase] == ["/auth/v1/user"]
 
 

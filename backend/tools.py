@@ -12,6 +12,7 @@ from typing import Awaitable, Callable
 
 import lab_results
 import rules
+from db import InvalidDBResponse
 
 TZ_OFFSET_MIN = int(os.environ.get("LOCAL_TZ_OFFSET_MIN", "330"))  # Sri Lanka = UTC+5:30
 
@@ -111,8 +112,11 @@ def summarize_logs(kind: str, rows: list[dict], days: int) -> dict:
 
 
 def summarize_heart(rows: list[dict]) -> dict:
-    vals = [(parse_ts(r["recorded_at"]), int(round(float(r["value"]))), r.get("context")) for r in rows
-            if r.get("recorded_at") and r.get("value") is not None]
+    try:
+        vals = [(parse_ts(r["recorded_at"]), round(float(r["value"])), r.get("context")) for r in rows
+                if r.get("recorded_at") and r.get("value") is not None]
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        raise InvalidDBResponse() from None
     if not vals:
         return {"count": 0, "note": "No heart rate readings in this period."}
     vals.sort(key=lambda x: x[0])
@@ -217,16 +221,21 @@ def _active_meds(rows: list[dict], today: date) -> list[dict]:
         try:
             start = date.fromisoformat(m["start_date"]) if m.get("start_date") else None
             end = date.fromisoformat(m["end_date"]) if m.get("end_date") else None
+        except TypeError:
+            raise InvalidDBResponse() from None
         except ValueError:
             start = end = None
         if start and start > today:
             continue
         if end and end < today:
             continue
+        times = m.get("times")
+        if times is not None and not isinstance(times, list):
+            raise InvalidDBResponse()
         med = {
             "name": m.get("name"),
             "dosage": m.get("dosage"),
-            "times": m.get("times") or [],
+            "times": times or [],
             "until": m.get("end_date"),
         }
         if isinstance(plan := m.get("prescription_plan"), dict):
