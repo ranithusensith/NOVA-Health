@@ -35,6 +35,11 @@ class ApiException implements Exception {
       'OCR_UNAVAILABLE' => 'Private text extraction is unavailable. You can enter clinical text manually.',
       'SCAN_FAILED' => 'Could not find the expected details. Check the image or reviewed text and try again.',
       'INVALID_INPUT' => 'Check the information you entered and try again.',
+      'MEDICATION_CHANGED' => 'Health or medication information changed. Reopen Medications and try again.',
+      'NOT_FOUND' when path == '/api/v1/medications/confirm' =>
+        'This medication is unavailable. Reopen Medications and try again.',
+      'MEDICATION_SAVE_UNVERIFIED' =>
+        'Could not verify that the medication was saved. Check Medications before trying again.',
       'PRESCRIPTION_SAVE_UNVERIFIED' =>
         'Could not verify that the prescription was saved. Check Medications before trying again.',
       'LAB_SAVE_UNVERIFIED' =>
@@ -188,6 +193,16 @@ class ApiClient {
       if (reviewToken != null) 'review_token': reviewToken,
     });
     return PrescriptionConfirmation.fromJson(data);
+  }
+
+  Future<PrescriptionConfirmation> confirmMedication(Map<String, dynamic> draft) async {
+    final account = draft['expected_account_id'];
+    if (account == null || aiAccountId != account) {
+      throw ApiException('Use the account that opened this medication.');
+    }
+    final result = await _postJson('/api/v1/medications/confirm', draft);
+    if (aiAccountId != account) throw ApiException('Use the account that opened this medication.');
+    return PrescriptionConfirmation.fromJson(result);
   }
 
   Future<ReportScan> scanReport(String reviewedText) async {

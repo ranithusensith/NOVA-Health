@@ -1,3 +1,4 @@
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -29,11 +30,15 @@ class PrescriptionDB:
             raise rows
         return rows
 
-    async def insert(self, table, rows):
-        assert table == "medications"
+    async def medication_safety_version(self):
+        return "00000000-0000-0000-0000-000000000055"
+
+    async def save_reviewed_medications(self, payload, signature):
+        rows = json.loads(payload)["rows"]
         if {row["id"] for row in rows}.intersection(row["id"] for row in self.rows):
             raise DBError("Duplicate medication ID")
         self.rows.extend(rows)
+        return True
 
 
 @pytest.fixture
@@ -161,6 +166,7 @@ def test_invalid_database_response_is_not_treated_as_zero_allergies(client, monk
         return httpx.Response(200, json={"unexpected": []})
 
     monkeypatch.setattr(httpx.AsyncClient, "get", invalid_table_response)
+    monkeypatch.setattr(UserDB, "medication_safety_version", PrescriptionDB.medication_safety_version)
     monkeypatch.setitem(main.app.dependency_overrides, main.get_db, lambda: UserDB("synthetic", "test-user"))
     response = client.post("/api/v1/scan/prescription/confirm", json=draft)
     assert response.json()["data"] == {"activated": False, "safety_check_status": "unavailable", "warnings": []}

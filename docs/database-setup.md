@@ -20,6 +20,7 @@ Run each file in order and stop on any SQL error. Apply the full sequence before
 | 8 | [008_medication_dose_occurrences.sql](../backend/changes/008_medication_dose_occurrences.sql) | Store scheduled dose times and enforce one log per identifiable occurrence. |
 | 9 | [009_lab_result_fidelity.sql](../backend/changes/009_lab_result_fidelity.sql) | Preserve reviewed lab result text, printed references and flags, and unknown report dates. Enforce exact numeric projections for reviewed rows. |
 | 10 | [010_legacy_chat_retention.sql](../backend/changes/010_legacy_chat_retention.sql) | Add owner-only expiration for legacy chats without expanding client privileges. |
+| 11 | [011_medication_safety_review.sql](../backend/changes/011_medication_safety_review.sql) | Gate medication activation and edits on an account-bound safety review. |
 
 Supabase Auth owns account identities. A signup creates a profile with the account UUID, the optional display name, empty conditions and goals, and onboarding marked incomplete. Health details remain unset until the user enters them. Existing profile fields retain their saved values. AI processing consent still requires its own explicit opt-in.
 
@@ -37,6 +38,7 @@ Check the migration history and review a schema-only snapshot against these file
 - Apply `008` after `007` and before updating Flutter or FastAPI reports. It adds a stored generated column and indexes on `medication_logs`, which can rewrite and lock that table. Verify the schema change and PostgREST schema cache on a disposable copy. Existing dose logs stay in place.
 - Apply `009` after `008` and before updating FastAPI or Flutter. Verify PostgREST can see the new columns in a disposable copy. Existing lab rows retain their values and dates.
 - Apply `010` after `009`. Review the legacy chat schema on an isolated copy and follow the retention runbook before enabling the job.
+- Apply `011` after `010`. Coordinate the migration, key provisioning and API/mobile releases as described under [P0-3 medication safety review](#p0-3-medication-safety-review).
 - Run the upgrade during a maintenance window. The signup trigger installation and constraint validation acquire locks. Take a backup before applying changes to an existing project.
 
 ## Application database contract
@@ -44,7 +46,7 @@ Check the migration history and review a schema-only snapshot against these file
 | Area | Tables and access |
 |---|---|
 | Profile and onboarding | Flutter reads its profile and confirmed allergies and saves them through `save_health_profile`. Skipping onboarding updates only the name and onboarding flag. FastAPI reads profile context and confirmed allergies. |
-| Medication and reminders | Flutter reads, adds, edits and stops `medications`. It logs and undoes selected occurrences in `medication_logs`. FastAPI reads active medication for reports and safety checks and inserts reviewed prescriptions. The dose FK checks both medication ID and owner. |
+| Medication and reminders | Flutter reads and stops `medications` through Supabase and submits manual additions, edits and scan confirmations through FastAPI. It logs and undoes selected occurrences in `medication_logs`. FastAPI reviews final drafts and invokes the signed medication writer. The dose FK checks both medication ID and owner. |
 | Tracking and reports | Flutter logs water, sleep, mood and meals. FastAPI reads these tables and `symptom_logs`. Time indexes support per-account history. |
 | Wearables and cycle | Flutter reads, imports and deletes `wearable_samples` and manages `period_logs`. FastAPI reads summaries. The unique wearable key matches Flutter's duplicate-safe import. |
 | Emergency | Flutter manages `emergency_contacts`. FastAPI reads contacts and inserts an SOS record into `audit_log`. |
@@ -88,11 +90,28 @@ psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/medication_dose_occurrences.sql \
   -f backend/changes/tests/lab_result_fidelity.sql \
   -f backend/changes/tests/legacy_chat_retention.sql
+
+# Test pgcrypto in a schema separate from the public API.
+psql -X -v ON_ERROR_STOP=1 -c '
+  create schema extensions;
+  create extension pgcrypto with schema extensions;
+  grant usage on schema extensions to h1_migration_owner;
+'
+
+PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
+  -f backend/changes/011_medication_safety_review.sql
+
+psql -X -v ON_ERROR_STOP=1 \
+  -f backend/changes/tests/medication_safety_review.sql \
+  -f backend/changes/tests/atomic_health_profile.sql \
+  -f backend/changes/tests/medication_dose_occurrences.sql \
+  -f backend/changes/tests/lab_result_fidelity.sql \
+  -f backend/changes/tests/legacy_chat_retention.sql
 ```
 
 Start the test session as the disposable cluster administrator. The fixtures simulate the Auth schema, the Auth insert role, PostgREST roles and default API grants. They verify PostgreSQL access and integrity. Use separate loopback HTTP services or a disposable Supabase environment for token and HTTP integration.
 
-To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run all six verification files.
+To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same pre- and post-011 verification sequence.
 
 ## H2 patient isolation and verification limits
 
@@ -104,7 +123,7 @@ The optional legacy chat table retains existing policies underneath the restrict
 - Use a publishable key or legacy anon key in Flutter. The app rejects a privileged key before initializing Supabase. A runtime guard cannot remove a value already compiled into a misconfigured mobile build. Inspect release inputs and artifacts before distribution, and keep privileged keys in server infrastructure.
 - The database owner, superusers, and roles with `BYPASSRLS` can access patient data. Inventory custom roles, API-exposed views and functions, triggers, Storage policies, and Realtime publications on an isolated deployment copy. These deployment-specific objects are outside the repository migrations.
 - Global uniqueness checks can reveal whether a known or guessable row ID exists through a conflict response. RLS protects the row contents. The SOS audit table accepts owner-scoped client inserts, so rows there do not independently prove a provider action.
-- The signed-in database role can write its own medication rows directly. The reviewed-prescription safety and acknowledgement checks run on the FastAPI confirmation route and the supported Flutter workflow. The database owner policy does not attest to the origin or review of a patient's own medication row.
+- Migration `011` removes direct medication creation and editing grants from app roles. It retains owner-scoped reads and permits an active row to transition to ended for the existing Stop action.
 - `006` retains existing restrictive policies and grants needed by the app without expanding them. Validate expected owner workflows against the target deployment schema. Paths and effects of deployment-specific delete triggers or foreign keys depend on that schema.
 
 ## H3 health profile saves
@@ -140,3 +159,14 @@ select public.prune_legacy_ai_chats();
 ```
 
 Keep the function unavailable to API roles and manage maintenance credentials outside the app. Backup and provider retention have separate controls. [External AI privacy policy](ai-privacy.md)
+
+
+## P0-3 medication safety review
+
+Manual additions, manual edits and scan confirmation use the same local rules. FastAPI checks the submitted final draft against confirmed allergies, conditions and currently active medicines. An edit substitutes the final draft for the prior row. The app displays warnings and requires an explicit acknowledgement before it can save that draft. The acknowledgement is bound to the account, draft, row revision and current warnings. FastAPI checks again on acknowledgement. A failed or unavailable check blocks activation. Checks and acknowledgements require no external AI processing or consent.
+
+Medication changes use a short-lived, server-signed assertion. The writer checks the assertion against the caller's Supabase subject and checks the target's current revision on edits. Changes to conditions, allergies or medications invalidate an in-flight review for that account. Client roles retain existing owner-scoped read and dose-log access. The signed writer validates ownership explicitly under its database owner privileges. Review deployment-specific views, grants, functions, triggers and extra RLS policies on a disposable copy. Direct adds, edits and reactivation from older Flutter versions fail after this migration. Existing medication records retain their state and histories.
+
+For a future approved rollout, install `pgcrypto` if needed and give the migration owner usage on its schema. Apply `011`. Provision 32 cryptographically random bytes through the protected database administration connection and put the same value, encoded as 64 hex characters, in the backend secret `MEDICATION_REVIEW_SIGNING_KEY` on all instances. Insert the decoded bytes in `public.nova_medication_signing_key.signing_key` with `singleton = true`. Use a bound parameter and exclude the operation and secret from logs, shell history and application builds. A missing key or a mismatched key blocks activation. Coordinate both sides of a rotation. Verify signed manual and scan saves, stopping and account isolation on a disposable copy before bringing up the matching app and API versions. Check the PostgREST schema cache after applying the migration.
+
+The rule set covers a limited set of recognized allergy conflicts, condition cautions, duplicate ingredients and some dose calculations. It uses the current account data at review time. Existing rows are grandfathered until edited. Custom privileged database writers remain trusted.

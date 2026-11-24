@@ -10,7 +10,7 @@ row-level security applies and no secret key is needed here.
 """
 
 import asyncio
-import hashlib
+import hmac
 import json
 import logging
 import os
@@ -27,7 +27,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import AwareDatetime, BaseModel, Field, StrictBool, StringConstraints, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, model_validator
 from starlette.exceptions import HTTPException
 
 load_dotenv()
@@ -101,7 +101,7 @@ async def safe_api_responses(request: Request, call_next):
         # Exception messages, tracebacks, request URLs and bodies may include patient data.
         error_log.error("API request failed unexpectedly")
         return _error_response(500, "SERVER_ERROR", "Could not process this request.")
-    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/")):
+    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/", "/api/v1/medications/")):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -244,13 +244,15 @@ async def read_image(upload: UploadFile) -> tuple[bytes, str]:
     return data, mime
 
 
-async def prescription_safety(db: UserDB, proposed: list[dict]) -> dict:
-    """Check a prescription against the signed-in user's current health data."""
+async def prescription_safety(db: UserDB, proposed: list[dict], *, replacing: uuid.UUID | None = None) -> dict:
+    """Apply the same local medication rules to scanned and manually entered drafts."""
     try:
         allergies = (await tools.get_allergies(db, {}))["allergies"]
         profile = await db.select("profiles", "conditions", filters={"id": f"eq.{db.user_id}"}, limit=1)
-        conditions = profile[0]["conditions"] if profile else None
-        existing = (await tools.get_medications(db, {}))["medications"]
+        if not profile:
+            raise InvalidDBResponse()
+        conditions = profile[0]["conditions"]
+        existing = (await tools.get_medications(db, {}, excluding=replacing))["medications"]
         if conditions is None:
             conditions = []
         if not isinstance(conditions, list):
@@ -261,7 +263,7 @@ async def prescription_safety(db: UserDB, proposed: list[dict]) -> dict:
         ]
     except Exception:  # noqa: BLE001  (any failed lookup or rule must prevent activation)
         return {"safety_check_status": "unavailable", "warnings": []}
-    return {"safety_check_status": "completed" if profile else "unavailable", "warnings": warnings}
+    return {"safety_check_status": "completed", "warnings": warnings}
 
 
 # ---------------------------------------------------------------
@@ -297,27 +299,37 @@ class PrescriptionPlan(BaseModel):
     first_dose_at: AwareDatetime | None = None
 
 
-class PrescriptionMedicationDraft(BaseModel):
+class MedicationDetails(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
     dosage: Annotated[str, StringConstraints(strip_whitespace=True, max_length=60)] | None = None
     times: list[Annotated[str, StringConstraints(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]] = Field(
         max_length=24,
     )
-    start_date: date
+    start_date: date | None
     end_date: date | None
+    reminders_enabled: StrictBool
+
+    @model_validator(mode="after")
+    def validate_details(self):
+        if self.start_date is not None and self.end_date is not None and self.end_date < self.start_date:
+            raise ValueError("The last day must be on or after the first day.")
+        if len(set(self.times)) != len(self.times):
+            raise ValueError("Choose distinct daily dose times.")
+        return self
+
+
+class PrescriptionMedicationDraft(MedicationDetails):
+    start_date: date
     prescription_plan: PrescriptionPlan
-    reminders_enabled: bool = Field(strict=True)
-    schedule_confirmed: bool = Field(strict=True)
+    schedule_confirmed: StrictBool
 
     @model_validator(mode="after")
     def validate_schedule(self):
         plan = self.prescription_plan
         if not self.schedule_confirmed:
             raise ValueError("Confirm the schedule and course dates.")
-        if self.end_date is not None and self.end_date < self.start_date:
-            raise ValueError("The last day must be on or after the first day.")
         if plan.kind == "daily":
-            if not self.times or len(set(self.times)) != len(self.times):
+            if not self.times:
                 raise ValueError("Choose distinct daily dose times.")
         elif self.times:
             raise ValueError("Only a daily schedule can have fixed dose times.")
@@ -337,6 +349,91 @@ class PrescriptionConfirmation(BaseModel):
     scan_id: uuid.UUID
     medications: list[PrescriptionMedicationDraft] = Field(min_length=1, max_length=10)
     review_token: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class ManualMedicationDraft(MedicationDetails):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_account_id: uuid.UUID
+    draft_id: uuid.UUID
+    medication_id: uuid.UUID | None = None
+    expected_revision: uuid.UUID | None = None
+    timing: Literal["daily", "as_needed", "unscheduled"] | None = None
+    instructions: str | None = Field(default=None, max_length=500)
+    frequency: str | None = Field(default=None, max_length=160)
+    review_token: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_operation(self):
+        if self.medication_id is None:
+            if self.expected_revision is not None or self.timing is None or self.start_date is None:
+                raise ValueError("Choose medication timing and a start date.")
+        elif self.expected_revision is None or self.instructions is not None or self.frequency is not None:
+            raise ValueError("Edits must preserve the original medication plan.")
+        return self
+
+
+def _medication_signing_key() -> bytes | None:
+    try:
+        key = bytes.fromhex(os.environ.get("MEDICATION_REVIEW_SIGNING_KEY", ""))
+    except ValueError:
+        return None
+    return key if len(key) == 32 else None
+
+
+async def _review_medications(
+    db: UserDB, review_id: uuid.UUID, rows: list[dict], token: str | None,
+    *, replacing: uuid.UUID | None = None, revision: uuid.UUID | None = None,
+) -> dict:
+    key = _medication_signing_key()
+    try:
+        context_version = await db.medication_safety_version() if key is not None else None
+    except DBError:
+        context_version = None
+    if context_version is None:
+        return {"safety_check_status": "unavailable", "warnings": [], "activated": False}
+    safety_check = await prescription_safety(db, rows, replacing=replacing)
+    result = {**safety_check, "activated": False}
+    if safety_check["safety_check_status"] != "completed":
+        return result
+
+    warnings = safety_check["warnings"]
+    if warnings:
+        # Sign the exact rows and current warnings with a server-only key.
+        review = json.dumps(
+            [db.user_id, str(review_id), str(revision), context_version, rows,
+             sorted(warnings, key=lambda warning: (warning["severity"], warning["message"]))],
+            sort_keys=True,
+        )
+        expected_token = hmac.digest(key, b"warning-review:" + review.encode(), "sha256").hex()
+        if token is None or not hmac.compare_digest(token, expected_token):
+            return {**result, "review_token": expected_token}
+
+    # The database verifies this short-lived authorization using the same key.
+    # Its separate message format keeps warning tokens unusable as write authorizations.
+    payload = json.dumps({
+        "account": db.user_id,
+        "expires": int(time.time()) + 60,
+        "context_version": context_version,
+        "rows": rows,
+        "expected_revision": str(revision) if revision else None,
+    })
+    signature = hmac.digest(key, b"medication-write:" + payload.encode(), "sha256").hex()
+    try:
+        saved = await db.save_reviewed_medications(payload, signature)
+    except DBError:
+        if rows[0]["source"] == "scan" and replacing is None:
+            raise ApiError(
+                502, "PRESCRIPTION_SAVE_UNVERIFIED",
+                "Could not verify that the prescription was saved. Check Medications before trying again.",
+            ) from None
+        raise ApiError(
+            502, "MEDICATION_SAVE_UNVERIFIED",
+            "Could not verify that the medication was saved. Check Medications before trying again.",
+        ) from None
+    if not saved:
+        raise ApiError(409, "MEDICATION_CHANGED", "Health or medication information changed. Reopen Medications and try again.")
+    return {**result, "activated": True}
 
 
 # ---------------------------------------------------------------
@@ -507,42 +604,80 @@ async def scan_prescription(
 @app.post("/api/v1/scan/prescription/confirm")
 async def confirm_prescription(body: PrescriptionConfirmation, db: UserDB = Depends(get_db)):
     """Recheck the final draft and write the checked rows in one batch."""
-    medications = [m.model_dump(mode="json", exclude={"schedule_confirmed"}) for m in body.medications]
-    safety_check = await prescription_safety(db, medications)
-    if safety_check["safety_check_status"] != "completed":
-        return {"data": {**safety_check, "activated": False}}
-
-    warnings = safety_check["warnings"]
-    if warnings:
-        # Bind the acknowledgement to this account, the exact draft and the current warnings.
-        review = json.dumps(
-            [db.user_id, str(body.scan_id), medications,
-             sorted(warnings, key=lambda warning: (warning["severity"], warning["message"]))],
-            sort_keys=True,
-        )
-        review_token = hashlib.sha256(review.encode()).hexdigest()
-        if body.review_token != review_token:
-            return {"data": {**safety_check, "activated": False, "review_token": review_token}}
-
     rows = [
         {
-            **medication,
-            # The same scan cannot create a duplicate batch if the response is lost.
+            **medication.model_dump(mode="json", exclude={"schedule_confirmed"}),
             "id": str(uuid.uuid5(body.scan_id, f"nova-prescription:{db.user_id}:{index}")),
             "user_id": db.user_id,
             "source": "scan",
             "status": "confirmed",
         }
-        for index, medication in enumerate(medications)
+        for index, medication in enumerate(body.medications)
     ]
-    try:
-        await db.insert("medications", rows)
-    except DBError as e:
-        raise ApiError(
-            502, "PRESCRIPTION_SAVE_UNVERIFIED",
-            "Could not verify that the prescription was saved. Check Medications before trying again.",
-        ) from e
-    return {"data": {**safety_check, "activated": True}}
+    return {"data": await _review_medications(db, body.scan_id, rows, body.review_token)}
+
+
+@app.post("/api/v1/medications/confirm")
+async def confirm_manual_medication(body: ManualMedicationDraft, db: UserDB = Depends(get_db)):
+    if str(body.expected_account_id) != db.user_id:
+        raise ApiError(403, "FORBIDDEN", "Use the account that opened this medication.")
+
+    medication_id = body.medication_id
+    source = "manual"
+    if medication_id is None:
+        plan = {"kind": body.timing, "instructions": body.instructions}
+        if body.frequency is not None:
+            plan["frequency"] = body.frequency
+    else:
+        existing = await db.select(
+            "medications", "source,status,prescription_plan,start_date,review_revision",
+            filters={"id": f"eq.{medication_id}"}, limit=1,
+        )
+        if not existing:
+            raise ApiError(404, "NOT_FOUND", "The requested resource was not found.")
+        current = existing[0]
+        if current["status"] != "confirmed" or current["review_revision"] != str(body.expected_revision):
+            raise ApiError(409, "MEDICATION_CHANGED", "This medication changed. Reopen it and review the current details.")
+        plan = current["prescription_plan"]
+        source = current["source"]
+        if plan is not None:
+            try:
+                stored_plan = PrescriptionPlan.model_validate(plan)
+                if stored_plan.kind == "interval" and (
+                    stored_plan.interval_minutes is None or stored_plan.first_dose_at is None
+                    or stored_plan.first_dose_at.date().isoformat() != current["start_date"]
+                ):
+                    raise ValueError("Invalid interval schedule")
+            except ValueError:
+                return {"data": {"safety_check_status": "unavailable", "warnings": [], "activated": False}}
+        if body.timing is not None:
+            if source != "manual" or (plan is not None and plan["kind"] == "interval"):
+                raise ApiError(422, "INVALID_INPUT", "Keep the original prescription timing.")
+            plan = {**(plan or {}), "kind": body.timing}
+        if plan is not None and plan["kind"] == "interval" and current["start_date"] != (
+            body.start_date.isoformat() if body.start_date is not None else None
+        ):
+            raise ApiError(422, "INVALID_INPUT", "Keep the start date for the original interval schedule.")
+
+    kind = plan["kind"] if plan is not None else ("daily" if body.times else "unscheduled")
+    invalid_times = bool(body.times) != (kind == "daily")
+    if invalid_times or (body.reminders_enabled and kind in ("as_needed", "unscheduled")):
+        raise ApiError(422, "INVALID_INPUT", "Check the medication schedule and reminders.")
+
+    identifier = medication_id or uuid.uuid5(body.draft_id, f"nova-manual:{db.user_id}")
+    row = {
+        **body.model_dump(mode="json", include={
+            "name", "dosage", "times", "start_date", "end_date", "reminders_enabled",
+        }),
+        "id": str(identifier),
+        "user_id": db.user_id,
+        "source": source,
+        "status": "confirmed",
+        "prescription_plan": plan,
+    }
+    return {"data": await _review_medications(
+        db, body.draft_id, [row], body.review_token, replacing=medication_id, revision=body.expected_revision,
+    )}
 
 
 @app.post("/api/v1/scan/report")

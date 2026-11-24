@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/api_client.dart';
 import 'care_models.dart';
+import 'scan_models.dart';
 import 'health_repository.dart';
 
 /// Medications, dose logs, history and emergency contacts in Supabase.
@@ -38,60 +40,33 @@ class CareRepository {
   Future<List<MedicationRecord>> medications({bool includeEnded = false, String? accountId}) async {
     var query = _db
         .from('medications')
-        .select('id,name,dosage,times,start_date,end_date,status,source,prescription_plan,reminders_enabled')
+        .select('id,name,dosage,times,start_date,end_date,status,source,prescription_plan,reminders_enabled,review_revision')
         .eq('user_id', accountId ?? _uid);
     if (!includeEnded) query = query.neq('status', 'ended');
     final rows = await query.order('name');
     return [for (final r in rows) MedicationRecord.fromJson(r)];
   }
 
-  Future<void> addMedication({
-    required String name,
-    String? dosage,
-    required List<String> times,
-    required DateTime startDate,
-    DateTime? endDate,
-  }) async {
-    await _db.from('medications').insert({
-      'user_id': _uid,
-      'name': name,
-      'dosage': (dosage == null || dosage.isEmpty) ? null : dosage,
-      'times': times,
-      'start_date': ymd(startDate),
-      'end_date': endDate == null ? null : ymd(endDate),
-      'source': 'manual',
-      'status': 'confirmed',
-    });
-    notifyMedicationsChanged();
-  }
-
-  Future<void> updateMedication(
-    String id, {
-    required String name,
-    String? dosage,
-    required List<String> times,
-    required DateTime startDate,
-    DateTime? endDate,
-    bool? remindersEnabled,
-  }) async {
-    await _db.from('medications').update({
-      'name': name,
-      'dosage': (dosage == null || dosage.isEmpty) ? null : dosage,
-      'times': times,
-      'start_date': ymd(startDate),
-      'end_date': endDate == null ? null : ymd(endDate),
-      if (remindersEnabled != null) 'reminders_enabled': remindersEnabled,
-    }).eq('id', id).eq('user_id', _uid);
-    notifyMedicationsChanged();
+  Future<PrescriptionConfirmation> reviewMedication(Map<String, dynamic> draft) async {
+    final result = await ApiClient.instance.confirmMedication(draft);
+    if (result.activated) notifyMedicationsChanged();
+    return result;
   }
 
   /// Stops a medicine: it stays in history but leaves the schedule.
-  Future<void> stopMedication(String id) async {
-    await _db
+  Future<void> stopMedication(String id, String? expectedAccountId) async {
+    if (expectedAccountId == null || _uid != expectedAccountId) {
+      throw ApiException('Use the account that opened this medication.');
+    }
+    final stopped = await _db
         .from('medications')
         .update({'status': 'ended', 'end_date': ymd(DateTime.now())})
         .eq('id', id)
-        .eq('user_id', _uid);
+        .eq('user_id', expectedAccountId)
+        .eq('status', 'confirmed')
+        .select('id')
+        .maybeSingle();
+    if (stopped == null) throw ApiException('This medication changed. Reopen it to see the current details.');
     notifyMedicationsChanged();
   }
 

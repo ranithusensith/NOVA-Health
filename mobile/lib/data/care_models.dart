@@ -120,6 +120,7 @@ class MedicationRecord {
     this.source,
     this.prescriptionPlan,
     this.remindersEnabled = true,
+    this.reviewRevision,
   });
 
   final String id;
@@ -136,6 +137,7 @@ class MedicationRecord {
   final String? source;
   final PrescriptionPlan? prescriptionPlan;
   final bool remindersEnabled;
+  final String? reviewRevision;
 
   bool get isEnded => status == 'ended';
 
@@ -204,6 +206,7 @@ class MedicationRecord {
           ? PrescriptionPlan.fromJson(j['prescription_plan'] as Map<String, dynamic>)
           : null,
       remindersEnabled: j['reminders_enabled'] != false,
+      reviewRevision: j['review_revision'] as String?,
     );
   }
 }

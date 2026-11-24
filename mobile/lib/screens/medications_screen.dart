@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -5,6 +7,8 @@ import '../data/care_models.dart';
 import '../data/care_repository.dart';
 import '../data/health_repository.dart';
 import '../data/sample_data.dart';
+import '../data/scan_models.dart';
+import '../services/api_client.dart';
 import '../services/privacy_diagnostics.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
@@ -385,69 +389,113 @@ class _MedicineRow extends StatelessWidget {
 // ---------------------------------------------------------------- editor sheet
 
 /// Add or edit a medication in a bottom sheet. Returns true when saved.
-Future<bool> showMedicationEditor(BuildContext context, {MedicationRecord? existing}) async {
+Future<bool> showMedicationEditor(BuildContext context,
+    {MedicationRecord? existing}) async {
+  final accountId = ApiClient.instance.aiAccountId;
   final saved = await showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
     backgroundColor: Colors.transparent,
-    builder: (_) => _MedicationEditor(existing: existing),
+    builder: (_) => MedicationEditor(
+      existing: existing,
+      accountId: accountId,
+      reviewMedication: CareRepository.instance.reviewMedication,
+    ),
   );
   return saved ?? false;
 }
 
-class _MedicationEditor extends StatefulWidget {
-  const _MedicationEditor({this.existing});
+class MedicationEditor extends StatefulWidget {
+  const MedicationEditor(
+      {super.key,
+      this.existing,
+      required this.accountId,
+      required this.reviewMedication});
   final MedicationRecord? existing;
+  final String? accountId;
+  final Future<PrescriptionConfirmation> Function(Map<String, dynamic>)
+      reviewMedication;
 
   @override
-  State<_MedicationEditor> createState() => _MedicationEditorState();
+  State<MedicationEditor> createState() => _MedicationEditorState();
 }
 
-class _MedicationEditorState extends State<_MedicationEditor> {
+class _MedicationEditorState extends State<MedicationEditor> {
   late final _name = TextEditingController(text: widget.existing?.name ?? '');
   late final _dose = TextEditingController(text: widget.existing?.dosage ?? '');
-  late List<String> _times = [...?widget.existing?.times];
-  late DateTime _start = widget.existing?.startDate ?? DateTime.now();
+  final _instructions = TextEditingController();
+  final _frequency = TextEditingController();
+  late final String _draftId = _newDraftId();
+  late List<String> _times = <String>{...?widget.existing?.times}.toList();
+  late DateTime? _start = _isEdit ? widget.existing!.startDate : DateTime.now();
   late DateTime? _end = widget.existing?.endDate;
   PrescriptionPlan? get _plan => widget.existing?.prescriptionPlan;
-  bool get _separateNotifications => _plan != null || widget.existing?.source == 'scan';
-  late bool _remind = _separateNotifications
-      ? widget.existing!.remindersEnabled && (_plan != null || _times.isNotEmpty)
-      : widget.existing == null || _times.isNotEmpty;
-  bool get _showTimes => _plan == null ? _separateNotifications || _remind : _plan!.timing == PrescriptionTiming.daily;
+  bool get _canChooseTiming =>
+      !_isEdit ||
+      (widget.existing!.source == 'manual' &&
+          _plan?.timing != PrescriptionTiming.interval);
+  late PrescriptionTiming _chosenTiming = _plan?.timing ??
+      (_times.isEmpty
+          ? PrescriptionTiming.unscheduled
+          : PrescriptionTiming.daily);
+  PrescriptionTiming get _timing => _canChooseTiming
+      ? _chosenTiming
+      : (_plan?.timing ??
+          (_times.isEmpty
+              ? PrescriptionTiming.unscheduled
+              : PrescriptionTiming.daily));
+  bool get _showTimes =>
+      _timing == PrescriptionTiming.daily ||
+      (!_canChooseTiming && _plan == null);
+  late bool _remind =
+      (_isEdit && _timing.isScheduled) && widget.existing!.remindersEnabled;
   bool _saving = false;
   String? _error;
+  PrescriptionConfirmation? _review;
 
   bool get _isEdit => widget.existing != null;
 
-  @override
-  void initState() {
-    super.initState();
-    if (!_separateNotifications && _times.isEmpty && _remind) _times = ['08:00'];
+  static String _newDraftId() {
+    final random = Random.secure();
+    return List.generate(
+            16, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'))
+        .join();
+  }
+
+  void _change(VoidCallback update) {
+    if (_saving) return;
+    setState(() {
+      update();
+      _review = null;
+      _error = null;
+    });
   }
 
   @override
   void dispose() {
     _name.dispose();
     _dose.dispose();
+    _instructions.dispose();
+    _frequency.dispose();
     super.dispose();
   }
 
   Future<void> _addTime() async {
-    final picked = await showTimePicker(context: context, initialTime: const TimeOfDay(hour: 20, minute: 0));
-    if (picked == null) return;
+    final picked = await showTimePicker(
+        context: context, initialTime: const TimeOfDay(hour: 20, minute: 0));
+    if (picked == null || !mounted) return;
     final t = clockString(picked.hour, picked.minute);
     if (_times.contains(t)) return;
-    setState(() => _times = [..._times, t]..sort());
+    _change(() => _times = [..._times, t]..sort());
   }
 
   Future<void> _pickDate({required bool end}) async {
     final now = DateTime.now();
-    final defaultEnd = _separateNotifications ? _start : _start.add(const Duration(days: 7));
-    final proposedEnd = _end ?? defaultEnd;
-    final initial = end && !proposedEnd.isBefore(_start) ? proposedEnd : _start;
-    final earliest = end ? _start : DateTime(now.year - 1);
+    final start = _start ?? dayOf(now);
+    final proposedEnd = _end ?? start;
+    final initial = end && !proposedEnd.isBefore(start) ? proposedEnd : start;
+    final earliest = end ? start : DateTime(now.year - 1);
     final latest = DateTime(now.year + 3);
     final picked = await showDatePicker(
       context: context,
@@ -456,50 +504,93 @@ class _MedicationEditorState extends State<_MedicationEditor> {
       lastDate: initial.isAfter(latest) ? initial : latest,
     );
     if (picked == null || !mounted) return;
-    setState(() {
+    _change(() {
       if (end) {
         _end = picked;
       } else {
         _start = picked;
-        if (_end != null && _end!.isBefore(_start)) _end = null;
+        if (_end != null && _end!.isBefore(picked)) _end = null;
       }
     });
   }
 
   Future<void> _save() async {
+    final accountId = widget.accountId;
+    final existing = widget.existing;
+    final token = _review?.reviewToken;
     final name = _name.text.trim();
-    if (name.isEmpty) {
-      setState(() => _error = 'Give the medicine a name.');
+    final dose = _dose.text.trim();
+    final instructions = _instructions.text.trim();
+    final frequency = _frequency.text.trim();
+    final timing = _timing;
+    if (accountId == null ||
+        (existing != null && existing.reviewRevision == null)) {
+      setState(() => _error =
+          'Reopen Medications while signed in to check this medication.');
       return;
     }
-    if ((_plan?.timing == PrescriptionTiming.daily || (_plan == null && _remind)) && _times.isEmpty) {
-      setState(() => _error = !_separateNotifications
-          ? 'Add at least one reminder time, or turn reminders off.'
-          : 'Choose at least one daily dose time for this schedule.');
+    if (name.isEmpty ||
+        name.length > 120 ||
+        dose.length > 60 ||
+        instructions.length > 500 ||
+        frequency.length > 160) {
+      setState(() => _error =
+          'Enter a medicine name and check the length of the details.');
+      return;
+    }
+    if (timing == PrescriptionTiming.daily && _times.isEmpty) {
+      setState(() => _error = 'Choose at least one daily dose time.');
       return;
     }
     setState(() {
       _saving = true;
       _error = null;
     });
-    final navigator = Navigator.of(context);
     try {
-      final repo = CareRepository.instance;
-      final times = _showTimes ? _times : <String>[];
-      if (_isEdit) {
-        await repo.updateMedication(widget.existing!.id,
-            name: name, dosage: _dose.text.trim(), times: times, startDate: _start, endDate: _end,
-            remindersEnabled: _separateNotifications ? _remind : null);
+      final result = await widget.reviewMedication({
+        'expected_account_id': accountId,
+        'draft_id': _draftId,
+        if (existing != null) ...{
+          'medication_id': existing.id,
+          'expected_revision': existing.reviewRevision,
+        } else
+          'instructions': instructions.isEmpty ? null : instructions,
+        if (!_isEdit &&
+            timing == PrescriptionTiming.daily &&
+            frequency.isNotEmpty)
+          'frequency': frequency,
+        if (_canChooseTiming) 'timing': timing.value,
+        'name': name,
+        'dosage': dose.isEmpty ? null : dose,
+        'times': timing == PrescriptionTiming.daily ? [..._times] : <String>[],
+        'start_date': _start == null ? null : ymd(_start!),
+        'end_date': _end == null ? null : ymd(_end!),
+        'reminders_enabled': timing.isScheduled && _remind,
+        if (token != null) 'review_token': token,
+      });
+      if (!mounted) return;
+      if (result.activated) {
+        Navigator.pop(context, true);
       } else {
-        await repo.addMedication(name: name, dosage: _dose.text.trim(), times: times, startDate: _start, endDate: _end);
+        setState(() {
+          _saving = false;
+          _review = result;
+          if (!result.safetyCheck.completed ||
+              result.reviewToken == null ||
+              result.safetyCheck.warnings.isEmpty) {
+            _review = null;
+            _error =
+                'NOVA could not complete the safety review. Try again before saving.';
+          }
+        });
       }
-      navigator.pop(true);
     } catch (e) {
       logAppEvent('Saving medication failed');
       if (mounted) {
         setState(() {
           _saving = false;
-          _error = friendlyError(e);
+          _review = null;
+          _error = e is ApiException ? e.message : friendlyError(e);
         });
       }
     }
@@ -510,10 +601,17 @@ class _MedicationEditorState extends State<_MedicationEditor> {
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
         title: Text('Stop ${widget.existing!.name}?'),
-        content: const Text('It leaves your schedule today. Past doses stay in your history.'),
+        content: const Text(
+            'It leaves your schedule today. Past doses stay in your history.'),
         actions: [
-          CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep')),
-          CupertinoDialogAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, true), child: const Text('Stop')),
+          CupertinoDialogAction(
+              isDefaultAction: true,
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Keep')),
+          CupertinoDialogAction(
+              isDestructiveAction: true,
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Stop')),
         ],
       ),
     );
@@ -521,13 +619,14 @@ class _MedicationEditorState extends State<_MedicationEditor> {
     setState(() => _saving = true);
     final navigator = Navigator.of(context);
     try {
-      await CareRepository.instance.stopMedication(widget.existing!.id);
-      navigator.pop(true);
+      await CareRepository.instance
+          .stopMedication(widget.existing!.id, widget.accountId);
+      if (mounted) navigator.pop(true);
     } catch (e) {
       if (mounted) {
         setState(() {
           _saving = false;
-          _error = friendlyError(e);
+          _error = e is ApiException ? e.message : friendlyError(e);
         });
       }
     }
@@ -542,7 +641,8 @@ class _MedicationEditorState extends State<_MedicationEditor> {
     final fieldStyle = NovaType.body.copyWith(color: c.textPrimary);
     final plan = _plan;
     final firstDose = plan?.firstDoseAt?.toLocal();
-    return Padding(
+    final warnings = _review?.safetyCheck.warnings ?? const <ScanWarning>[];
+    final editor = Padding(
       padding: EdgeInsets.fromLTRB(8, 0, 8, keyboard + 8),
       child: Glass(
         radius: NovaRadius.sheet,
@@ -557,52 +657,124 @@ class _MedicationEditorState extends State<_MedicationEditor> {
                 child: Container(
                   width: 36,
                   height: 5,
-                  decoration: BoxDecoration(color: c.textSecondary.withValues(alpha: 0.4), borderRadius: BorderRadius.circular(3)),
+                  decoration: BoxDecoration(
+                      color: c.textSecondary.withValues(alpha: 0.4),
+                      borderRadius: BorderRadius.circular(3)),
                 ),
               ),
               const SizedBox(height: 14),
-              Text(_isEdit ? 'Edit medication' : 'Add medication', style: NovaType.title2.copyWith(color: c.textPrimary)),
+              Text(_isEdit ? 'Edit medication' : 'Add medication',
+                  style: NovaType.title2.copyWith(color: c.textPrimary)),
               const SizedBox(height: 16),
               TextField(
                 controller: _name,
+                readOnly: _saving,
+                onChanged: (_) => _change(() {}),
                 textCapitalization: TextCapitalization.words,
                 style: fieldStyle,
-                decoration: novaFieldDecoration(c, 'Medicine name', icon: Icons.medication_rounded),
+                decoration: novaFieldDecoration(c, 'Medicine name',
+                    icon: Icons.medication_rounded),
               ),
               const SizedBox(height: 10),
               TextField(
                 controller: _dose,
+                readOnly: _saving,
+                onChanged: (_) => _change(() {}),
                 style: fieldStyle,
-                decoration: novaFieldDecoration(c, 'Dose (e.g. 10 mg, 1 tablet)', icon: CupertinoIcons.plus_circle),
+                decoration: novaFieldDecoration(
+                    c, 'Dose (e.g. 10 mg, 1 tablet)',
+                    icon: CupertinoIcons.plus_circle),
               ),
               const SizedBox(height: 16),
+              if (_canChooseTiming) ...[
+                InputDecorator(
+                  decoration: novaFieldDecoration(c, 'Schedule',
+                      icon: CupertinoIcons.clock),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<PrescriptionTiming>(
+                      value: _chosenTiming,
+                      isExpanded: true,
+                      isDense: true,
+                      items: [
+                        for (final timing in [
+                          PrescriptionTiming.unscheduled,
+                          PrescriptionTiming.daily,
+                          PrescriptionTiming.asNeeded
+                        ])
+                          DropdownMenuItem(
+                              value: timing, child: Text(timing.label)),
+                      ],
+                      onChanged: (timing) {
+                        if (timing != null) {
+                          _change(() => _chosenTiming = timing);
+                        }
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+              ],
+              if (!_isEdit && _timing == PrescriptionTiming.daily) ...[
+                TextField(
+                  controller: _frequency,
+                  readOnly: _saving,
+                  onChanged: (_) => _change(() {}),
+                  style: fieldStyle,
+                  decoration: novaFieldDecoration(
+                      c, 'Written frequency (optional)',
+                      icon: CupertinoIcons.clock),
+                ),
+                const SizedBox(height: 10),
+              ],
+              if (!_isEdit) ...[
+                TextField(
+                  controller: _instructions,
+                  readOnly: _saving,
+                  onChanged: (_) => _change(() {}),
+                  maxLines: 2,
+                  style: fieldStyle,
+                  decoration: novaFieldDecoration(
+                      c, 'Written instructions (optional)',
+                      icon: CupertinoIcons.doc_text),
+                ),
+                const SizedBox(height: 12),
+              ],
               if (plan != null) ...[
-                Text('Scanned directions', style: NovaType.headline.copyWith(color: c.textPrimary)),
-                for (final text in [plan.dosageText, plan.frequency, plan.instructions, plan.durationText].whereType<String>())
-                  Text(text, style: NovaType.subhead.copyWith(color: c.textSecondary)),
-                if (plan.timing == PrescriptionTiming.interval && firstDose != null)
+                Text('Original directions',
+                    style: NovaType.headline.copyWith(color: c.textPrimary)),
+                for (final text in [
+                  plan.dosageText,
+                  plan.frequency,
+                  plan.instructions,
+                  plan.durationText
+                ].whereType<String>())
+                  Text(text,
+                      style: NovaType.subhead.copyWith(color: c.textSecondary)),
+                if (plan.timing == PrescriptionTiming.interval &&
+                    firstDose != null)
                   Text(
                     '${plan.intervalLabel} · First dose ${_date(firstDose)} at ${formatClock(firstDose)}',
                     style: NovaType.subhead.copyWith(color: c.textSecondary),
                   ),
                 const SizedBox(height: 12),
               ],
-              if (plan?.timing.isScheduled != false) Row(
-                children: [
-                  Expanded(child: Text('Reminders', style: NovaType.headline.copyWith(color: c.textPrimary))),
-                  Semantics(
-                    label: 'Reminders',
-                    child: CupertinoSwitch(
-                      value: _remind,
-                      activeTrackColor: c.success,
-                      onChanged: (v) => setState(() {
-                        _remind = v;
-                        if (!_separateNotifications && v && _times.isEmpty) _times = ['08:00'];
-                      }),
+              if (_timing.isScheduled)
+                Row(
+                  children: [
+                    Expanded(
+                        child: Text('Reminders',
+                            style: NovaType.headline
+                                .copyWith(color: c.textPrimary))),
+                    Semantics(
+                      label: 'Reminders',
+                      child: CupertinoSwitch(
+                        value: _remind,
+                        activeTrackColor: c.success,
+                        onChanged: (v) => _change(() => _remind = v),
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
               if (_showTimes) ...[
                 const SizedBox(height: 8),
                 Wrap(
@@ -611,16 +783,20 @@ class _MedicationEditorState extends State<_MedicationEditor> {
                   children: [
                     for (final t in _times)
                       InputChip(
-                        label: Text(formatClock(DateTime(2000, 1, 1, parseClock(t)!.hour, parseClock(t)!.minute))),
-                        onDeleted: () => setState(() => _times = [..._times]..remove(t)),
+                        label: Text(formatClock(DateTime(2000, 1, 1,
+                            parseClock(t)!.hour, parseClock(t)!.minute))),
+                        onDeleted: () =>
+                            _change(() => _times = [..._times]..remove(t)),
                         deleteButtonTooltipMessage: 'Remove time',
                         shape: const StadiumBorder(),
                         side: BorderSide.none,
                         backgroundColor: c.primaryTint,
-                        labelStyle: NovaType.subhead.copyWith(color: c.primary, fontWeight: FontWeight.w600),
+                        labelStyle: NovaType.subhead.copyWith(
+                            color: c.primary, fontWeight: FontWeight.w600),
                       ),
                     ActionChip(
-                      avatar: Icon(CupertinoIcons.plus, size: 16, color: c.primary),
+                      avatar:
+                          Icon(CupertinoIcons.plus, size: 16, color: c.primary),
                       label: const Text('Add time'),
                       onPressed: _addTime,
                       shape: const StadiumBorder(),
@@ -637,8 +813,10 @@ class _MedicationEditorState extends State<_MedicationEditor> {
                   Expanded(
                     child: _DateField(
                       label: 'Starts',
-                      value: _date(_start),
-                      onTap: plan?.timing == PrescriptionTiming.interval ? null : () => _pickDate(end: false),
+                      value: _start == null ? 'No start date' : _date(_start!),
+                      onTap: plan?.timing == PrescriptionTiming.interval
+                          ? null
+                          : () => _pickDate(end: false),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -647,17 +825,55 @@ class _MedicationEditorState extends State<_MedicationEditor> {
                       label: 'Ends',
                       value: _end == null ? 'No end date' : _date(_end!),
                       onTap: () => _pickDate(end: true),
-                      onClear: _end == null ? null : () => setState(() => _end = null),
+                      onClear: _end == null
+                          ? null
+                          : () => _change(() => _end = null),
                     ),
                   ),
                 ],
               ),
               if (_error != null) ...[
                 const SizedBox(height: 12),
-                Text(_error!, style: NovaType.footnote.copyWith(color: c.alert)),
+                Text(_error!,
+                    style: NovaType.footnote.copyWith(color: c.alert)),
+              ],
+              if (warnings.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Semantics(
+                  liveRegion: true,
+                  child: NovaCard(
+                    tone: warnings.any((warning) => warning.isHigh)
+                        ? NovaCardTone.alert
+                        : NovaCardTone.tinted,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Medication safety warnings',
+                            style: NovaType.headline
+                                .copyWith(color: c.textPrimary)),
+                        for (final warning in warnings)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              '${warning.isHigh ? 'High priority' : 'Caution'} · ${warning.message}',
+                              style: NovaType.subhead
+                                  .copyWith(color: c.textPrimary),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
               ],
               const SizedBox(height: 18),
-              NovaButton(label: _saving ? 'Saving…' : 'Save', onPressed: _saving ? null : _save),
+              NovaButton(
+                label: _saving
+                    ? 'Checking…'
+                    : (warnings.isEmpty
+                        ? 'Check safety and save'
+                        : 'Acknowledge warnings and save'),
+                onPressed: _saving ? null : _save,
+              ),
               if (_isEdit) ...[
                 const SizedBox(height: 8),
                 NovaButton(
@@ -678,7 +894,9 @@ class _MedicationEditorState extends State<_MedicationEditor> {
                           final navigator = Navigator.of(context);
                           navigator.pop(false);
                           navigator.push(
-                            MaterialPageRoute(fullscreenDialog: true, builder: (_) => const ScanCameraScreen()),
+                            MaterialPageRoute(
+                                fullscreenDialog: true,
+                                builder: (_) => const ScanCameraScreen()),
                           );
                         },
                 ),
@@ -688,6 +906,7 @@ class _MedicationEditorState extends State<_MedicationEditor> {
         ),
       ),
     );
+    return AbsorbPointer(absorbing: _saving, child: editor);
   }
 }
 
