@@ -13,6 +13,8 @@ When tracking logs are selected, the assistant provider can receive a bounded sy
 
 Weather uses an explicitly selected city. NOVA sends the entered city search and the selected city's public ID or approximate coordinates to Open-Meteo. The weather provider receives no NOVA account ID, session token or health records. The app keeps the selection in memory for the signed-in session. In a reviewed assistant reply, an unchecked-by-default option allows NOVA to display current weather evidence. That option does not add the city or weather fields to the Gemini request. User-typed text in the question follows the existing chat disclosure.
 
+Wearable steps and sleep imports run only when selected on the phone. NOVA stores account-owned daily totals and the calendar boundaries needed to place them correctly. A reviewed Assistant reply can separately opt in to imported steps and sleep. Gemini receives only the selected bounded totals, with no exact dates, times, source identifiers or raw health-platform records. Local reports require no AI consent.
+
 ## Storage and deployment
 
 - Apply the [ordered Supabase migrations](database-setup.md) as an authorized migration owner. Migration `004` creates the account-scoped table for the disclosure version and consent timestamp. Users begin opted out when the table is first created. Deploy the matching mobile and API versions. Clients using the previous scan or assistant request format must update.

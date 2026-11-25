@@ -320,6 +320,11 @@ class DayStats {
     this.waterGoalMl,
     this.sleepGoalHours,
     this.sleepHours,
+    this.sleepSource,
+    this.wearableSleepHours,
+    this.wearableSleepSource,
+    this.steps,
+    this.stepsSource,
     this.moodLevel,
     this.dosesTaken = 0,
     this.dosesScheduled = 0,
@@ -333,6 +338,11 @@ class DayStats {
   final int? waterGoalMl;
   final double? sleepGoalHours;
   final double? sleepHours;
+  final String? sleepSource;
+  final double? wearableSleepHours;
+  final String? wearableSleepSource;
+  final int? steps;
+  final String? stepsSource;
 
   /// 0 (awful) … 4 (great), or null when no mood was logged.
   final int? moodLevel;

@@ -307,8 +307,8 @@ class ChatRequest(BaseModel):
     message: str
     reviewed: StrictBool = False
     emergency_only: StrictBool = False
-    health_data: list[Literal["profile", "medications", "logs", "heart_rate", "cycle", "lab_results"]] = Field(
-        default_factory=list, max_length=6,
+    health_data: list[Literal["profile", "medications", "logs", "heart_rate", "cycle", "lab_results", "wearable_activity"]] = Field(
+        default_factory=list, max_length=7,
     )
     recent_questions: list[Annotated[str, StringConstraints(max_length=400)]] = Field(default_factory=list, max_length=4)
 

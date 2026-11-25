@@ -23,6 +23,7 @@ Run each file in order and stop on any SQL error. Apply the full sequence before
 | 11 | [011_medication_safety_review.sql](../backend/changes/011_medication_safety_review.sql) | Gate medication activation and edits on an account-bound safety review. |
 | 12 | [012_daily_tracking_goals.sql](../backend/changes/012_daily_tracking_goals.sql) | Store optional water and sleep tracking goals on the account profile. |
 | 13 | [013_symptom_tracking.sql](../backend/changes/013_symptom_tracking.sql) | Add symptom notes, record revisions, validation and owner-scoped writes. |
+| 14 | [014_wearable_daily_totals.sql](../backend/changes/014_wearable_daily_totals.sql) | Add owner-scoped daily step and sleep totals with an atomic refresh RPC. |
 
 Supabase Auth owns account identities. A signup creates a profile with the account UUID, the optional display name, empty conditions and goals, and onboarding marked incomplete. Health details remain unset until the user enters them. Existing profile fields retain their saved values. AI processing consent still requires its own explicit opt-in.
 
@@ -43,6 +44,7 @@ Check the migration history and review a schema-only snapshot against these file
 - Apply `011` after `010`. Coordinate the migration, key provisioning and API/mobile releases as described under [P0-3 medication safety review](#p0-3-medication-safety-review).
 - Apply `012` after `011` and before releasing the P0-4 Flutter app and API. Verify the new profile columns through PostgREST and check owner access on a disposable copy.
 - Apply `013` after `012` and before using symptom tracking in Flutter or running the matching FastAPI version. Existing symptom entries remain readable. Verify the PostgREST schema cache and grants in an isolated deployment copy.
+- Apply `014` after `013` and before releasing wearable activity imports. Verify the new table, RPC and PostgREST schema cache on an isolated copy.
 - Run the upgrade during a maintenance window. The signup trigger installation and constraint validation acquire locks. Take a backup before applying changes to an existing project.
 
 ## Application database contract
@@ -52,7 +54,7 @@ Check the migration history and review a schema-only snapshot against these file
 | Profile and onboarding | Flutter reads its profile and confirmed allergies and saves them through `save_health_profile`. Skipping onboarding updates only the name and onboarding flag. FastAPI reads profile context and confirmed allergies. |
 | Medication and reminders | Flutter reads and stops `medications` through Supabase and submits manual additions, edits and scan confirmations through FastAPI. It logs and undoes selected occurrences in `medication_logs`. FastAPI reviews final drafts and invokes the signed medication writer. The dose FK checks both medication ID and owner. |
 | Tracking and reports | Flutter logs water, sleep, mood, meals and symptoms. Owners can edit, resolve and delete their symptom logs. FastAPI reads these tables for local reports and selected assistant evidence. Time indexes support per-account history. |
-| Wearables and cycle | Flutter reads, imports and deletes `wearable_samples` and manages `period_logs`. FastAPI reads summaries. The unique wearable key matches Flutter's duplicate-safe import. |
+| Wearables and cycle | Flutter manages heart rate in `wearable_samples` and period history in `period_logs`. Steps and sleep use `wearable_daily_totals`. FastAPI reads account-scoped summaries. |
 | Emergency | Flutter manages `emergency_contacts`. FastAPI reads contacts and inserts an SOS record into `audit_log`. |
 | Lab results | Flutter submits reviewed observations to FastAPI, which inserts the batch using the signed-in account's token. Flutter lists and removes its own records. Daily reports and assistant summaries read the corrected observations. |
 | AI privacy | FastAPI reads and updates account-scoped `ai_processing_consents` and invokes `delete_legacy_ai_chats()`. The fresh schema has no chat history table. |
@@ -111,12 +113,14 @@ psql -X -v ON_ERROR_STOP=1 -v p11_before_migration=1 \
   -f backend/changes/tests/symptom_tracking.sql
 
 PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
-  -f backend/changes/013_symptom_tracking.sql
+  -f backend/changes/013_symptom_tracking.sql \
+  -f backend/changes/014_wearable_daily_totals.sql
 
 psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/medication_safety_review.sql \
   -f backend/changes/tests/daily_tracking_goals.sql \
   -f backend/changes/tests/symptom_tracking.sql \
+  -f backend/changes/tests/wearable_daily_totals.sql \
   -f backend/changes/tests/atomic_health_profile.sql \
   -f backend/changes/tests/medication_dose_occurrences.sql \
   -f backend/changes/tests/lab_result_fidelity.sql \
@@ -125,7 +129,7 @@ psql -X -v ON_ERROR_STOP=1 \
 
 Start the test session as the disposable cluster administrator. The fixtures simulate the Auth schema, the Auth insert role, PostgREST roles and default API grants. They verify PostgreSQL access and integrity. Use separate loopback HTTP services or a disposable Supabase environment for token and HTTP integration.
 
-To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same verification sequence through migration `013`.
+To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same verification sequence through migration `014`.
 
 ## H2 patient isolation and verification limits
 
@@ -204,3 +208,12 @@ Migration `013` keeps the restrictive owner policy, existing reads and earlier r
 Daily reports show symptoms with onset on the selected local date alongside the other recorded measurements. The assistant uses patient symptom entries when the user selects tracking logs for a reviewed reply and has external AI consent. NOVA writes the visible facts from those records. Symptom names, notes and onset dates stay out of the provider payload for selected symptom records. Local red-flag checks run independently of external AI consent.
 
 The September 23, 2026 NOVA Health project proposal calls for symptom tracking in the deliverables and for symptoms to be connected with relevant health context in the core features. This workflow covers recording, reviewing and resolving observations, putting them alongside daily health data, and surfacing them in grounded assistant replies. P1-1 does not infer causes, attribute symptoms to other records, or add new clinical recommendations.
+
+
+## P1-3 wearable steps and sleep
+
+The app reads one selected metric at a time and imports up to seven device-local days. HealthKit statistics and Health Connect aggregation provide step totals. NOVA uses only intervals the source classifies as asleep. It merges overlapping asleep intervals, treats gaps up to 90 minutes as part of the same episode without counting the gap, and assigns the episode to the local date when its last asleep interval ends. A session with no asleep stages yields no sleep value. Distinct episodes ending on the same date contribute to that date's total. Only daily values, source platform, local date, UTC day boundaries and capture time are stored. NOVA stores no raw sleep stages, step records, watch identifiers or source application identifiers for these imports.
+
+The import ties each total to the captured calendar window. A newer successful capture replaces a previous total for that exact window, including when it comes from another platform. A retry or older capture cannot add to or overwrite it. Other time-zone windows stay separate. Views use their matching local-day boundaries, including 23- or 25-hour days. A day without matching data stays unknown. A provider's explicit zero step count can be shown. Manual sleep keeps precedence, and imported asleep time supplies the daily value when a successful manual read finds no entries. A failed or ambiguous manual read stays unknown, with the imported observation available separately in the report.
+
+The write RPC validates the expected account against the session and uses the caller's RLS grants. Existing heart-rate records, grants and duplicate keys stay in place. The assistant reads wearable totals only after the user selects the separate imported-steps-and-sleep option and existing AI consent succeeds.

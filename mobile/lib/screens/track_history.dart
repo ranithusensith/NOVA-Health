@@ -99,10 +99,15 @@ class _TrackHistoryState extends State<TrackHistory> {
       child: Column(
         children: [
           Row(children: [
+            tile(Icons.directions_walk, c.steps, 'Steps', d.steps == null ? 'Unknown' : '${d.steps} · ${d.stepsSource}'),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
             tile(Icons.water_drop_outlined, c.water, 'Water',
                 d.waterMl == null ? 'Unknown' : '${d.waterMl} mL'),
             const SizedBox(width: 10),
-            tile(Icons.bedtime_outlined, c.sleep, 'Sleep', d.sleepHours == null ? '—' : '${d.sleepHours!.toStringAsFixed(1)} h'),
+            tile(Icons.bedtime_outlined, c.sleep, 'Sleep', d.sleepHours == null ? 'Unknown'
+                : '${d.sleepHours!.toStringAsFixed(1)} h${d.sleepSource == null ? '' : ' · ${d.sleepSource}'}'),
           ]),
           const SizedBox(height: 10),
           Row(children: [
@@ -132,6 +137,8 @@ class _TrackHistoryState extends State<TrackHistory> {
     final sleepAvg = sleepLogged.isEmpty ? null : sleepLogged.reduce((a, b) => a + b) / sleepLogged.length;
     final sleepGoal = days.last.sleepGoalHours;
 
+    final steps = [for (final day in days) day.steps?.toDouble()];
+    final stepDays = steps.whereType<double>().length;
     final moods = [for (final d in days) d.moodLevel];
     final moodLogged = moods.whereType<int>().toList();
 
@@ -143,6 +150,15 @@ class _TrackHistoryState extends State<TrackHistory> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _ChartCard(
+          icon: Icons.directions_walk,
+          color: c.steps,
+          title: 'Imported steps',
+          goalLabel: '',
+          chart: SleepBarChart(values: steps, labels: labels, goal: null, color: c.steps, semanticTitle: 'Steps per day', unit: 'steps'),
+          summary: stepDays == 0 ? 'No step totals available' : 'Step totals available for $stepDays of ${days.length} days',
+        ),
+        const SizedBox(height: 12),
         _ChartCard(
           icon: Icons.water_drop_outlined,
           color: c.water,
@@ -167,8 +183,8 @@ class _TrackHistoryState extends State<TrackHistory> {
           goalLabel: sleepGoal == null ? '' : 'Goal $sleepGoal h',
           chart: SleepBarChart(values: sleep, labels: labels, goal: sleepGoal, color: c.sleep),
           summary: sleepAvg == null
-              ? 'No sleep logged this week'
-              : 'Avg ${hm(sleepAvg)} on ${sleepLogged.length} logged night${sleepLogged.length == 1 ? '' : 's'}',
+              ? 'No sleep totals available this week'
+              : 'Avg ${hm(sleepAvg)} on ${sleepLogged.length} recorded night${sleepLogged.length == 1 ? '' : 's'}',
         ),
         const SizedBox(height: 12),
         _ChartCard(

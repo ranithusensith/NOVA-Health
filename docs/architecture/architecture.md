@@ -50,7 +50,7 @@ flowchart TD
 
 | Module | Folder | Owns | Must NOT do |
 |---|---|---|---|
-| Mobile app | `mobile/` | UI, local reminders, reading HealthKit / Samsung Health, camera capture | Call the AI, database, or external APIs directly |
+| Mobile app | `mobile/` | UI, local reminders, reading HealthKit / Health Connect, camera capture | Call the AI, database, or external APIs directly |
 | Backend API | `backend/` | Auth, validation, business logic, notifications, weather calls | Contain AI reasoning logic |
 | AI engine | `ai-engine/` | Health context, cross-domain reasoning, OCR, food analysis, report generation | Handle login or talk to the app directly |
 | Database | `backend/` (schema) | Users, profile, medications, symptoms, sleep, mood, water, meals, reports, emergency contacts | Hold business logic |
@@ -61,7 +61,7 @@ flowchart TD
 1. The mobile app talks only to the Backend API.
 2. The Backend API talks to the AI engine, the database, the weather API, and the push service.
 3. Gemini receives only approved payloads built by the NOVA backend. It does not access the app or database directly.
-4. Wearable data flows: watch → phone → app → API. HealthKit and Samsung Health are read on-device only.
+4. Wearable data flows from the watch to Apple Health or from Galaxy Watch through Samsung Health to Health Connect. NOVA reads on the phone and saves authorized heart-rate readings or daily totals to Supabase.
 
 ## 5. Main Data Flows
 
@@ -108,7 +108,7 @@ re-encoded photo. See [External AI privacy](../ai-privacy.md).
 | Database | PostgreSQL / Firebase (final choice by database owner) |
 | AI | LLMs, agentic architecture, knowledge-based reasoning |
 | Vision | OCR and multimodal vision models |
-| Wearables | Apple HealthKit, Samsung Health |
+| Wearables | Apple HealthKit and Android Health Connect |
 | Weather | Open-Meteo city geocoding and forecast APIs |
 | Notifications | Push (FCM) and local notifications |
 | Tools | VS Code, Android Studio, Git/GitHub |

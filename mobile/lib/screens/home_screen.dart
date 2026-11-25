@@ -162,7 +162,7 @@ class _InsightCard extends StatelessWidget {
   static String insightFor(HealthSnapshot d) {
     final parts = <String>[];
     if (d.sleepMinutes case final minutes?) {
-      parts.add('You logged ${formatMinutes(minutes)} of sleep.');
+      parts.add('Sleep: ${formatMinutes(minutes)}${d.sleepSource == null ? ' logged' : ' from ${d.sleepSource}'}.');
     }
     if (d.waterL case final litres?) {
       parts.add('You logged ${litres.toStringAsFixed(2)} L of water.');
@@ -299,9 +299,12 @@ class _RingsCard extends StatelessWidget {
                     goal: data.waterGoalL == null ? '' : ' · ${data.waterGoalL} L target'),
                 const SizedBox(height: 12),
                 _Legend(color: c.sleep, label: 'Sleep', value: data.sleepMinutes == null ? 'Unknown' : formatMinutes(data.sleepMinutes!),
-                    goal: data.sleepGoalMinutes == null ? '' : ' / ${formatMinutes(data.sleepGoalMinutes!)}'),
+                    goal: [
+                      if (data.sleepGoalMinutes != null) ' / ${formatMinutes(data.sleepGoalMinutes!)}',
+                      if (data.sleepSource != null) ' · ${data.sleepSource}',
+                    ].join()),
                 const SizedBox(height: 12),
-                _Legend(color: c.steps, label: 'Steps', value: data.steps == null ? 'Unknown' : formatThousands(data.steps!), goal: ''),
+                _Legend(color: c.steps, label: 'Steps', value: data.steps == null ? 'Unknown' : formatThousands(data.steps!), goal: data.stepsSource == null ? '' : ' · ${data.stepsSource}'),
               ],
             ),
           ),

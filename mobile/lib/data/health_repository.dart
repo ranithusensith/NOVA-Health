@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'care_models.dart';
 import 'daily_metrics.dart';
 import 'sample_data.dart';
+import 'wearable_daily.dart';
 
 class _Dose {
   _Dose(this.name, this.dose, this.at);
@@ -77,8 +78,11 @@ class HealthRepository {
     final profile =
         await _db.from('profiles').select('full_name,water_goal_ml,sleep_goal_hours').eq('id', owner).maybeSingle();
 
+    final wearableDay = WearableDay(today);
+    final imported = (await WearableDailyRepository.instance.read([wearableDay], owner))[wearableDay.date];
+    final usedWearableSleep = sleep?.isEmpty == true ? imported?.sleep : null;
     final waterMl = dailyTotal(water, 'amount_ml');
-    final sleepHours = dailySleep(sleep);
+    final sleepHours = usedWearableSleep == null ? dailySleep(sleep) : imported?.sleepHours;
     final goals = DailyGoals.fromJson(profile);
 
     final fullName = ((profile?['full_name'] as String?) ?? '').trim();
@@ -110,11 +114,14 @@ class HealthRepository {
 
     return HealthSnapshot(
       firstName: firstName,
-      isEmpty: waterMl == null && sleepHours == null && meds.isEmpty,
+      isEmpty: waterMl == null && sleepHours == null && imported?.steps == null && meds.isEmpty,
       waterL: waterMl == null ? null : waterMl / 1000,
       waterGoalL: goals.waterMl == null ? null : goals.waterMl! / 1000,
       sleepMinutes: sleepHours == null ? null : (sleepHours * 60).round(),
       sleepGoalMinutes: goals.sleepHours == null ? null : (goals.sleepHours! * 60).round(),
+      steps: imported?.steps?.value,
+      stepsSource: imported?.steps?.sourceLabel,
+      sleepSource: usedWearableSleep?.sourceLabel,
       nextMedication: next,
       medsToday: doses.length,
     );

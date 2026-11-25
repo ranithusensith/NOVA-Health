@@ -10,7 +10,7 @@
 
 ## Apple Health heart rate
 
-Runner uses `Runner/Runner.entitlements` in Debug, Profile, and Release. The file enables basic HealthKit access. NOVA requests read access to Heart Rate only, when a signed-in user chooses to import. An authorization request can finish successfully even when the user declines read access. The screen treats an empty result as no readable readings and keeps manual entry available.
+Runner uses `Runner/Runner.entitlements` in Debug, Profile, and Release. The file enables basic HealthKit access. NOVA requests read access only to the metric the signed-in user chooses, one of Heart Rate, Steps or Sleep Analysis. An authorization request can finish successfully even when the user declines read access. The screen treats an empty result as no readable readings and keeps manual entry available.
 
 Before device testing, open `mobile/ios/Runner.xcworkspace`. In **Runner → Signing & Capabilities**, select the team's approved development signing configuration and verify that the registered app identifier and provisioning profile include HealthKit. Keep local signing credentials and profiles outside the repository. Verify the signed app carries `com.apple.developer.healthkit` before installing it. An unsigned build checks compilation and project settings. Provisioning and actual HealthKit access require a signed build.
 
@@ -65,3 +65,12 @@ Physical-device verification with synthetic accounts and medicines is still requ
 3. `git checkout -b feature/full-build`
 4. `git add .` then `git commit -m "Full app, backend, evaluation and docs"`
 5. `git push -u origin feature/full-build`, then open a Pull Request.
+
+
+## Signed wearable device verification
+
+Use dedicated synthetic health records and a disposable NOVA account. Do not import records from a personal Health or Health Connect store. The simulator and APK compilation checks do not exercise platform access.
+
+- **Apple Watch and iPhone.** Use a signed development build with the HealthKit entitlement and a paired, supported Apple Watch. Verify the approved App ID and provisioning profile. Make sure the test Apple Health store contains only synthetic data for the requested type. Test a grant, a read with no visible data, and a locked-device read. HealthKit does not disclose whether the user denied a read permission. Empty reads must remain “no readable data.” Include overlapping sleep stages and an episode crossing midnight. [Apple HealthKit authorization](https://developer.apple.com/documentation/HealthKit/authorizing-access-to-health-data?changes=_2)
+- **Galaxy Watch and Android phone.** Use an installed, signed test APK and a supported phone with Health Connect enabled. Verify the Galaxy Watch-to-Samsung Health-to-Health Connect setup and the selected permissions for Samsung Health and NOVA. Use a synthetic Health Connect test dataset for import checks. Check the unavailable, permission-denied, empty and valid cases. Include multiple step sources. Health Connect's aggregate reads apply its activity source priority. [Samsung Health Connect FAQ](https://developer.samsung.com/health/health-connect-faq.html) · [Android aggregate reads](https://developer.android.com/health-and-fitness/health-connect/aggregate-data)
+- **Both platforms.** Verify each button requests only its selected read type. Repeat a synthetic import, then change a total and reimport. Check the same-day total after a time-zone change, a late completion after an account switch, and that heart-rate reading and manual entry still work. Test the separate Assistant permission using synthetic records. The provider platform, rather than the watch model, is the attributed source.

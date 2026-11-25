@@ -26,6 +26,7 @@ HEALTH_TOOLS = {
     "medications": ("get_allergies", "get_medications", "check_medication_safety"),
     "logs": ("get_recent_logs",),
     "heart_rate": ("get_heart_rate",),
+    "wearable_activity": ("get_wearable_activity",),
     "cycle": ("get_cycle",),
     "lab_results": ("get_lab_results",),
 }
@@ -135,6 +136,13 @@ def _minimize_result(name: str, result: dict, identifiers: tuple[str, ...]) -> d
                 for row in list(result["per_day"].values())[:15]
             ]
         return out
+    if name == "get_wearable_activity":
+        records = list(result.get("records", {}).values())[-15:]
+        # Only totals. Calendar dates, query bounds, account and platform identifiers stay in NOVA.
+        return {
+            "steps_on_recorded_days": [row["steps"]["value"] for row in records if "steps" in row],
+            "sleep_hours_on_recorded_days": [round(row["sleep"]["value"] / 3600, 2) for row in records if "sleep" in row],
+        }
     if name == "check_medication_safety":
         return {"warning_severities": [row.get("severity") for row in result.get("warnings", [])[:5]]}
     fields = {

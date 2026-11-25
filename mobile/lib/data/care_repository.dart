@@ -5,6 +5,7 @@ import '../services/api_client.dart';
 import 'care_models.dart';
 import 'daily_metrics.dart';
 import 'scan_models.dart';
+import 'wearable_daily.dart';
 import 'health_repository.dart';
 
 /// Medications, dose logs, history and emergency contacts in Supabase.
@@ -191,9 +192,12 @@ class CareRepository {
         }
       }
     }
+    final wearableDays = [for (var i = 0; i < days; i++) WearableDay(calendarDay(from, i))];
+    final imported = await WearableDailyRepository(client: _db).read(wearableDays, owner);
     return [
       for (var i = 0; i < days; i++)
-        _dayStats(calendarDay(from, i), water, sleep, mood, meals, goals, taken[i], unassigned[i], meds),
+        _dayStats(calendarDay(from, i), water, sleep, mood, meals, goals, taken[i], unassigned[i], meds,
+            imported[wearableDays[i].date]),
     ];
   }
 
@@ -207,11 +211,17 @@ class CareRepository {
     int taken,
     int unassigned,
     List<MedicationRecord> meds,
+    WearableDailyReadings? imported,
   ) => DayStats(
     day: day,
     waterMl: dailyTotal(water?[day], 'amount_ml'),
     waterGoalMl: goals.waterMl,
-    sleepHours: dailySleep(sleep?[day]),
+    sleepHours: sleep != null && sleep[day] == null ? imported?.sleepHours : dailySleep(sleep?[day]),
+    sleepSource: sleep != null && sleep[day] == null ? imported?.sleep?.sourceLabel : null,
+    wearableSleepHours: imported?.sleepHours,
+    wearableSleepSource: imported?.sleep?.sourceLabel,
+    steps: imported?.steps?.value,
+    stepsSource: imported?.steps?.sourceLabel,
     sleepGoalHours: goals.sleepHours,
     moodLevel: dailyMood(mood?[day]),
     dosesTaken: taken,

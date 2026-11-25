@@ -271,7 +271,7 @@ class ApiClient {
       'message': message,
       'reviewed': true,
       'health_data': healthData,
-      if (healthData.any((kind) => kind == 'logs' || kind == 'heart_rate'))
+      if (healthData.any((kind) => kind == 'logs' || kind == 'heart_rate' || kind == 'wearable_activity'))
         'local_calendar': deviceCalendar(DateTime.now()),
       'recent_questions': recentQuestions,
       if (weatherCityId != null) 'weather': {'city_id': weatherCityId, 'consent': true},
@@ -338,6 +338,7 @@ class AssistantReply {
     'allergies': 'Allergy records',
     'medicine safety': 'Medication safety checks',
     'heart rate': 'Heart-rate records',
+    'wearable activity': 'Imported steps and sleep',
     'cycle': 'Period logs',
     'lab results': 'Lab results',
   };

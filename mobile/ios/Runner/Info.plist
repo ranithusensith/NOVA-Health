@@ -52,7 +52,7 @@
 		</dict>
 	</dict>
 	<key>NSHealthShareUsageDescription</key>
-	<string>When you choose to import, NOVA Health reads heart rate from Apple Health and saves the readings to your NOVA account so you can view your trends.</string>
+	<string>When you choose to import, NOVA Health reads the heart rate, steps, or sleep data you select from Apple Health and saves readings or daily totals to your NOVA account.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>NOVA Health does not write to Apple Health.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
