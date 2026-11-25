@@ -26,7 +26,7 @@ List<Map<String, dynamic>> _medicine(String name, String time) => [
 class _NotificationHost {
   final calls = <MethodCall>[];
   final pending = <int, Map<Object?, Object?>>{};
-  final delivered = <String>[];
+  final delivered = <int, String>{};
   bool permission = true;
   bool exact = true;
   bool exactRevoked = false;
@@ -57,10 +57,14 @@ class _NotificationHost {
         pending.clear();
         return null;
       case 'show':
-        delivered.add((call.arguments as Map)['body'] as String);
+        final args = call.arguments as Map;
+        delivered[args['id'] as int] = args['body'] as String;
         return null;
       case 'cancel':
-        delivered.clear();
+        final args = call.arguments;
+        final id = args is int ? args : (args as Map)['id'] as int;
+        delivered.remove(id);
+        pending.remove(id);
         return null;
       case 'zonedSchedule':
         final arguments = Map<Object?, Object?>.from(call.arguments as Map);
@@ -127,13 +131,16 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
-  test('report notice has generic content only and is cleared independently', () async {
+  test('report notice has generic content only and is cleared independently',
+      () async {
     await service.init();
     await service.sync();
     await service.showReportNotice(_alice, () => false);
     expect(host.delivered, isEmpty);
     await service.showReportNotice(_alice, () => true);
-    final notice = host.calls.singleWhere((call) => call.method == 'show').arguments as Map;
+    final notice = host.calls
+        .singleWhere((call) => call.method == 'show')
+        .arguments as Map;
     expect(notice['title'], 'NOVA Health');
     expect(notice['body'], 'Open NOVA Health to view an update.');
     expect(notice['payload'], anyOf(isNull, isEmpty));
@@ -143,14 +150,18 @@ void main() {
     expect(host.pending, hasLength(1));
   });
 
-  test('outdoor notice is immediate, private and holds no forecast or account payload', () async {
+  test(
+      'outdoor notice is immediate, private and holds no forecast or account payload',
+      () async {
     await service.init();
     await service.sync();
     await service.showOutdoorNotice(_alice, () => false);
     await service.showOutdoorNotice(_bob, () => true);
     expect(host.delivered, isEmpty);
     await service.showOutdoorNotice(_alice, () => true);
-    final notice = host.calls.singleWhere((call) => call.method == 'show').arguments as Map;
+    final notice = host.calls
+        .singleWhere((call) => call.method == 'show')
+        .arguments as Map;
     expect(notice['id'], 900003);
     expect(notice['title'], 'NOVA Health');
     expect(notice['body'], 'Open NOVA Health to view an update.');
@@ -162,6 +173,35 @@ void main() {
 
   for (final target in [TargetPlatform.android, TargetPlatform.iOS]) {
     test(
+        '$target isolates same-account refreshes and fully clears on account change',
+        () async {
+      platform(target);
+      await service.init();
+      await service.sync();
+      await service.showReportNotice(_alice, () => true);
+      await service.showOutdoorNotice(_alice, () => true);
+      host.delivered[1] = 'Synthetic medicine preview';
+      await service.setShowNames(true);
+      await service.sync();
+      expect(host.delivered.keys, unorderedEquals([900002, 900003]));
+      expect(host.pending.keys, [1]);
+      await service.setEnabled(false);
+      await service.sync();
+      expect(host.delivered.keys, unorderedEquals([900002, 900003]));
+      expect(host.pending, isEmpty);
+      service.dispose();
+      service = reminders();
+      await service.init();
+      await service.sync();
+      expect(host.delivered.keys, unorderedEquals([900002, 900003]));
+      expect(host.pending, isEmpty);
+      account = _bob;
+      await service.sync();
+      expect(host.delivered, isEmpty);
+      expect(host.pending.keys, [1]);
+    });
+
+    test(
         '$target schedules dated generic requests and opt-in is limited to the account',
         () async {
       platform(target);
@@ -169,7 +209,7 @@ void main() {
         'reminders.enabled': true,
         'reminders.showNames': true,
       });
-      host.delivered.add('legacy medicine detail');
+      host.delivered[71] = 'legacy medicine detail';
       await service.init();
       await service.sync();
 
@@ -193,7 +233,7 @@ void main() {
 
       await service.setShowNames(true);
       expect(host.pending.values.single['body'], contains('$_alice 250 mg'));
-      host.delivered.add('$_alice 250 mg');
+      host.delivered[1] = '$_alice 250 mg';
       await service.setShowNames(false);
       expect(host.delivered, isEmpty);
       expect(host.pending.values.single['body'],
@@ -254,7 +294,7 @@ void main() {
     await service.init();
     final refresh = service.sync();
     await fetching.future;
-    host.delivered.add('synthetic old preview');
+    host.delivered[1] = 'synthetic old preview';
     await service.signOut(() async {
       expect(host.pending, isEmpty);
       expect(host.delivered, isEmpty);

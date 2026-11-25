@@ -1,51 +1,28 @@
-# Deploy the NOVA backend (about 20 minutes, needs internet once)
+# Deploy NOVA Health
 
-The app uses Supabase for login. External AI is optional and disabled by default.
+Use a disposable staging environment and synthetic accounts for verification before any patient use.
 
-## A. Before you start
-1. All code is on GitHub (the final upload). `backend/` must contain `Dockerfile` and `requirements.txt`.
-2. Have `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` ready. Review the [external AI privacy deployment requirements](docs/ai-privacy.md#storage-and-deployment) before adding an AI key or enabling Gemini.
-3. Set up the database using the [Supabase migration order](docs/database-setup.md).
+## Backend and database
 
-## B. Render (free plan)
-1. Add the files from this pack: `backend/Dockerfile`, `backend/.dockerignore`, and `render.yaml` at the repo root.
-2. Commit and push.
-3. render.com -> sign in with GitHub -> New -> Blueprint -> pick the repo -> Apply.
-4. Open the new service -> Environment. Set the Supabase URL and publishable key. Leave external AI off until the privacy deployment requirements are met.
-5. Wait for "Live". Open `https://<your-service>.onrender.com/health`. Expect `{"data":{"status":"ok"}}`.
-6. Free plan sleeps after 15 minutes idle; the first request then takes about 50 seconds.
-   Before a demo, open `/health` once to wake it.
+- Create a Supabase project with Auth enabled. Apply [migrations 001–016](docs/database-setup.md) with an approved migration owner. Confirm signup, email confirmation, restrictive RLS, owner-only access, and restoration procedures. Provision the protected medication-review key after migration 011, and set the matching server-only `MEDICATION_REVIEW_SIGNING_KEY`.
+- Deploy the FastAPI service using `backend/Dockerfile`. Configure the approved HTTPS `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`. Confirm `GET /health` returns `{"data":{"status":"ok"}}`. Check cold-start and response timing on the chosen host before a demonstration.
+- If using the Render blueprint, review `autoDeploy` and configure explicit release approval before linking a branch. Review permitted web origins, HTTPS termination, disabled request-body capture, OCR dependencies, and safe temporary file and error logging. See [backend environment settings](backend/.env.example).
+- Register the [daily-report Cron job](docs/requirements/p2-2-automated-daily-reports.md#scheduler-setup) and the [legacy-chat retention job](docs/database-setup.md#h11-legacy-chat-retention) only in approved environments. Verify job ownership, timing, retry, catch-up, and retention using synthetic data.
 
-## C. Point the app at it
+## Provider configuration
 
-For a real build, copy `mobile/dart_defines.example.json` to an ignored local configuration file. Set `SUPABASE_URL` and `API_URL` to the approved HTTPS endpoints, use the Supabase project's publishable key (or a legacy `anon` key), and set `USE_MOCK_API` to `false`. Keep service-role keys and other secrets in server configuration. Android and iOS validate these settings before compiling Profile or Release, and NOVA checks them again before initializing Supabase. Debug builds allow HTTP only for loopback development endpoints, including the Android emulator's `10.0.2.2` alias.
+- Gemini stays off until the operator approves its project, paid service, disclosure, access, telemetry, and retention. Use the [external AI privacy requirements](docs/ai-privacy.md#storage-and-deployment) to provision the approved model and server-only key. User consent is still required.
+- Open-Meteo stays off until `WEATHER_PROVIDER` is configured. Use the approved public or customer mode and keep any customer API key on the backend. City forecasts include freshness and source. Outdoor notices are opt-in, foreground-only, and generic in the notification tray. [Weather notice scope](docs/requirements/p2-3-safe-contextual-health-alerts.md)
+- Keep `NOTIFY_PROVIDER=log` for a synthetic demo. Use SOS simulation and leave the dialer and SMS composer inactive. Enabling Twilio for a real environment requires approved sender, account and credentials, delivery verification, and a reviewed fallback policy.
 
-From `mobile/`, run `flutter build apk --release --dart-define-from-file=dart_defines.json` for the Android release artifact. Release APKs are unsigned until the team supplies approved release signing. For an unsigned iOS compile check, run `flutter build ios --release --no-codesign --dart-define-from-file=dart_defines.json`. Use the approved signing and provisioning setup for device installs. The configuration check validates URL and key format. The release operator still needs to verify that the endpoints and key belong to the intended environment.
+## Android and iOS
 
-### Offline scan demos
+Use an ignored copy of `mobile/dart_defines.example.json` with the approved HTTPS `SUPABASE_URL` and `API_URL`, the Supabase publishable key, and `USE_MOCK_API=false`. Profile and release builds validate the configuration. Keep provider keys and server credentials out of Flutter.
 
-From `mobile/`, run `flutter run --debug --dart-define=USE_MOCK_API=true`. Demo mode opens a labeled screen with bundled synthetic prescription, lab, and meal examples. Demo saves stay in memory. The demo needs no login or network configuration, and never initializes Supabase, requests access to the photo library, or sends anything to an AI provider. To return to real mode, stop the demo and start a new build with valid real settings. Demo records do not carry over. Use a dedicated device or simulator if you need to keep demo installs separate from a real installation.
+From `mobile/`, compile with `flutter build apk --release --dart-define-from-file=dart_defines.json` and `flutter build ios --release --no-codesign --dart-define-from-file=dart_defines.json`. Apply approved Android signing and iOS provisioning before installing release artifacts. Verify the iOS HealthKit entitlement, Android Health Connect grants, and native camera, notifications, reboot, and account-switch behavior on signed physical devices.
 
-If a demonstration needs real API behavior, use synthetic accounts in a disposable environment with its own backend and Supabase project. Apply the migrations there. Review the final artifact and its signing before distribution.
+Session and PKCE credentials use Android encrypted preferences backed by the platform Keystore and iOS Keychain with device-only access. Android excludes shared preferences from cloud backup and device transfer, including legacy token preferences and notification caches. Device-local preferences may need to be set again on a new device. On upgrade, a matching legacy session must be confirmed by the configured Supabase Auth project before migration. An invalid, expired, or offline legacy session requires sign-in again. Earlier backups are subject to their own retention policies. Verify upgrade, reinstalls, restored devices, and sign-out on staging devices.
 
-## D. Real SMS for SOS (optional)
-1. twilio.com -> trial account (free credit). Trial accounts can only text numbers you verify in the console.
-2. In Render set: `NOTIFY_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (your Twilio number).
-3. Add a verified number as an emergency contact in the app and send an SOS.
-Without Twilio the app still works: it opens the phone's messages app with the alert ready to send.
+## Offline demonstration
 
-## E. If something fails
-- 401 from the app: wrong `SUPABASE_URL` or key on the server.
-- "AI service is busy": check capacity and quota for the approved Gemini project. Keep the provider disabled while reviewing a different project or model.
-- "External AI is disabled": see the [provider approval and database requirements](docs/ai-privacy.md#storage-and-deployment).
-- 502 on first request: service was asleep; retry after a minute.
-- Docker build error: paste the last 20 lines of the Render build log.
-
-
-## Optional weather configuration
-
-Set `WEATHER_PROVIDER=open-meteo-public` only for approved non-commercial use. A commercial deployment requires the appropriate Open-Meteo subscription and `WEATHER_PROVIDER=open-meteo-customer` with `OPEN_METEO_API_KEY` in the backend secret store. The key is never needed by Flutter. An unset provider disables city search and live forecasts. Confirm the provider's attribution and use terms before enabling either mode. [Open-Meteo terms](https://open-meteo.com/en/terms) · [Provider plans](https://open-meteo.com/en/pricing)
-
-The backend uses fixed HTTPS destinations, a four-second deadline per upstream call and a per-account lookup quota. The in-memory cache is bounded per worker. It marks cached observations stale after the freshness window and drops expired values. The app shows each state and uses a separate labeled synthetic demo. Keep weather request query strings and upstream API URLs out of gateway, access, tracing and error logs. No database migration or device location permission is required.
-
-The NOVA Health proposal calls for weather data integration and weather-informed health notifications. P1-2 delivers city forecasts and on-demand outdoor planning information. The notification objective remains deferred pending safety review. The feature does not estimate individual medical risk or provide official severe-weather alerts.
+`flutter run --debug --dart-define=USE_MOCK_API=true` opens a labeled offline sample-scan screen with bundled synthetic prescription, lab, and meal examples. Saves are session-only. The full walkthrough uses a separate configured staging build and synthetic accounts. [Rehearsal script](docs/DEMO_SCRIPT.md)

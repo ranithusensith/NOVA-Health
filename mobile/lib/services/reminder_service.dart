@@ -42,6 +42,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
   // The Android reboot receiver recognizes the prefix for dated batches.
   static const _payloadPrefix = 'nova-reminder-v2:';
   static const _scheduleScopeKey = 'reminders.v2.scheduleScope';
+  static const _notificationOwnerKey = 'notifications.v1.owner';
   static const _testId = 900001;
   static const _reportNoticeId = 900002;
   static const _outdoorNoticeId = 900003;
@@ -58,6 +59,8 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
   StreamSubscription<AuthState>? _authEvents;
   Timer? _calendarTimer;
   String? _account;
+  String? _notificationOwner;
+  bool _medicationsCleared = false;
   String? _appliedScope;
   String? _batchPayload;
   String? _calendarStamp;
@@ -122,10 +125,13 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
         onDidReceiveNotificationResponse: _onTap,
       );
       _ready = true;
-      // Clear legacy notifications before the first screen can switch accounts.
+      // A notification can belong to the restored account even when medication
+      // reminders are disabled or their schedule is out of date.
       final account = _readAccount();
-      if (account == null || !_enabled || _appliedScope != _scope(account)) {
-        await _invalidateNotifications();
+      if (account == null || prefs.getString(_notificationOwnerKey) != account) {
+        await _invalidateNotifications(all: true, owner: account);
+      } else {
+        _notificationOwner = account;
       }
     } catch (_) {
       logAppEvent('Reminders could not start or clear the previous schedule.');
@@ -142,7 +148,10 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
           state.event == AuthChangeEvent.signedIn ||
           state.event == AuthChangeEvent.initialSession ||
           _accountId() != _account) {
-        unawaited(sync());
+        unawaited(sync(
+          clearAll: state.event == AuthChangeEvent.signedOut ||
+              state.session?.user.id != _notificationOwner,
+        ));
       }
     }, onError: (Object _) {});
     _calendarTimer = Timer.periodic(const Duration(minutes: 1), (_) {
@@ -283,7 +292,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
     _signingOut = true;
     _permissionRequest++;
     try {
-      await sync(clearFirst: true);
+      await sync(clearAll: true);
       await endSession();
     } finally {
       _signingOut = false;
@@ -309,36 +318,57 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
     return run;
   }
 
-  Future<void> _invalidateNotifications() {
+  Future<void> _invalidateNotifications(
+      {required bool all, required String? owner}) {
     _appliedScope = null;
     _batchPayload = null;
     return _onNativeQueue(() async {
       try {
         await _prefs?.remove(_scheduleScopeKey);
       } finally {
-        await _plugin
-            .cancelAll(); // Also clear delivered notification previews.
+        if (all) {
+          _notificationOwner = null;
+          await _prefs?.remove(_notificationOwnerKey);
+          await _plugin.cancelAll();
+          if (owner != null) {
+            await _prefs?.setString(_notificationOwnerKey, owner);
+          }
+          _notificationOwner = owner;
+        } else if (!_medicationsCleared) {
+          // IDs 1–60 are reserved for medication doses. Cancel both pending and
+          // delivered previews, without touching report or outdoor notices.
+          for (var id = 1; id <= 60; id++) {
+            await _plugin.cancel(id: id);
+          }
+          await _plugin.cancel(id: _testId);
+        }
+        _medicationsCleared = true;
       }
     });
   }
 
-  Future<void> sync({bool clearFirst = false}) async {
+  Future<void> sync({bool clearFirst = false, bool clearAll = false}) async {
     if (!_ready) return;
     final account = _readAccount();
     final generation = ++_generation;
     _calendarStamp = _stamp(_clock());
     final active = account != null && _enabled && !_signingOut;
     final scope = active ? _scope(account) : null;
+    final accountBoundary =
+        clearAll || _signingOut || _notificationOwner != account;
 
     try {
-      if (clearFirst || !active || _appliedScope != scope) {
-        await _invalidateNotifications();
+      if (accountBoundary || clearFirst || !active || _appliedScope != scope) {
+        await _invalidateNotifications(
+          all: accountBoundary,
+          owner: _signingOut ? null : account,
+        );
       }
       if (!active || !_current(generation, account)) return;
       final granted = await permissionGranted();
       if (!_current(generation, account)) return;
       if (!granted) {
-        await _invalidateNotifications();
+        await _invalidateNotifications(all: false, owner: account);
         return;
       }
 
@@ -350,11 +380,13 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
       await _onNativeQueue(() async {
         if (!_current(generation, account) || _scope(account) != scope) return;
         final plans = buildReminderPlan(medicines, _clock());
+        // Report and outdoor notices are immediate and never pending.
         await _plugin.cancelAllPendingNotifications();
         if (!_current(generation, account)) return;
         await _prefs?.setString(_scheduleScopeKey, scope!);
         if (!_current(generation, account)) return;
         _appliedScope = scope;
+        _medicationsCleared = false;
         final random = Random.secure();
         final payload = _payloadPrefix +
             base64UrlEncode(List.generate(12, (_) => random.nextInt(256)));
@@ -409,31 +441,37 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> showOutdoorNotice(String owner, bool Function() current) =>
       _showPrivateUpdate(_outdoorNoticeId, owner, current);
 
-  Future<void> _showPrivateUpdate(int id, String owner, bool Function() current) =>
+  Future<void> _showPrivateUpdate(
+          int id, String owner, bool Function() current) =>
       _onNativeQueue(() async {
-        if (!_ready || _signingOut || _accountId() != owner || !current()) return;
+        if (!_ready ||
+            _signingOut ||
+            _accountId() != owner ||
+            _notificationOwner != owner ||
+            !current()) {
+          return;
+        }
         await _plugin.show(
           id: id,
           title: 'NOVA Health',
           body: 'Open NOVA Health to view an update.',
           notificationDetails: const NotificationDetails(
             android: AndroidNotificationDetails(
-              'nova_private_updates', 'Private NOVA updates',
+              'nova_private_updates',
+              'Private NOVA updates',
               visibility: NotificationVisibility.private,
             ),
-            iOS: DarwinNotificationDetails(presentAlert: true, presentBanner: true, presentList: true),
+            iOS: DarwinNotificationDetails(
+                presentAlert: true, presentBanner: true, presentList: true),
           ),
         );
       });
 
-  Future<void> clearReportNotice() =>
-      _clearPrivateUpdate(_reportNoticeId);
+  Future<void> clearReportNotice() => _clearPrivateUpdate(_reportNoticeId);
 
-  Future<void> clearOutdoorNotice() =>
-      _clearPrivateUpdate(_outdoorNoticeId);
+  Future<void> clearOutdoorNotice() => _clearPrivateUpdate(_outdoorNoticeId);
 
-  Future<void> _clearPrivateUpdate(int id) =>
-      _onNativeQueue(() async {
+  Future<void> _clearPrivateUpdate(int id) => _onNativeQueue(() async {
         if (_ready) await _plugin.cancel(id: id);
       });
 
@@ -447,6 +485,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
     try {
       return await _onNativeQueue(() async {
         if (!_current(generation, account)) return false;
+        _medicationsCleared = false;
         await _schedule(
             _testId,
             'NOVA Health test',

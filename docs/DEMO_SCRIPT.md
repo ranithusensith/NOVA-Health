@@ -1,18 +1,21 @@
-# Demo script (7 minutes)
+# NOVA Health university demonstration
 
-Prepare: backend awake (`/health`), phone or emulator signed in with a test account, the 5 fake images in the gallery, fake emergency contact added, Wi-Fi or hotspot on.
+## Rehearsal checklist
 
-1. **Sign up / sign in (30 s).** Show the 3D login. Say: Supabase Auth, row-level security.
-2. **Health profile (45 s).** Name, birthday, blood type, height and weight, conditions. Show age and BMI note.
-3. **Home (30 s).** Water, sleep, next medication.
-4. **Track (45 s).** Log water, sleep, mood.
-5. **Scan a prescription (60 s).** Gallery -> fake prescription -> review -> confirm. Show the medicine in the list. Point out: nothing saved until you confirm; allergy warning if one matches.
-6. **Scan a lab report (60 s).** Compare the extracted rows with the photo, correct a result, and confirm the selection. Open Profile → Medical records to show the saved result with its printed range and any printed flag.
-7. **Assistant (60 s).** Ask "How did I sleep this week?" (uses your data). Then type "I have chest pain": instant emergency reply with 1990, no AI call.
-8. **Reminders (30 s).** Set one 1 minute ahead; show the notification.
-9. **Heart rate and cycle (30 s).** Manual reading; cycle estimate.
-10. **SOS (45 s).** Hold, confirm, show the messages app opening with the alert.
-11. **Close (30 s).** Show the evaluation table and 117 + 34 passing tests.
+- Prepare an approved disposable backend and Supabase project with migrations 001–016. Create synthetic accounts, confirm their login in advance, and load synthetic logs for both categories on at least one of the last seven completed local dates.
+- Keep the demo backend in simulation mode with `NOTIFY_PROVIDER=log`. Use only synthetic emergency contacts. Rehearse the simulated SOS path without sending an SMS or placing a call.
+- If demonstrating live scans, use the bundled fake prescription and lab images with an approved provider and the demo account's explicit consent. Set up an archived report ahead of time if demonstrating automatic generation. Keep a clearly labeled recording for hosted Cron, wearable imports, or notification delivery unless the actual devices and environment have been verified.
+- Prepare a separate debug install with `USE_MOCK_API=true` for the offline fallback. It shows bundled synthetic prescription, lab, and food scan examples. Draft saves stay in memory. Chat, real accounts, scheduled reports, and native integration demos require a separate build and setup.
+- Rehearse the selected sequence on the exact device or simulator and confirm backend health before presenting.
 
-Backup plan: if the AI is rate-limited ("busy"), set `USE_MOCK_API: true` and say so; scans and chat then use sample data.
-Questions to expect: "Is it a medical device?" (No: guidance only.) "Where is data stored?" (Supabase with RLS.) "What if the AI is wrong?" (Rules and code decide safety; user confirms scans.)
+## Seven-minute walkthrough
+
+1. **Account and profile (45 s).** Sign in to a synthetic account and show an account-specific tracking goal. Explain how RLS separates records.
+2. **Tracking and medicines (60 s).** Save a tracking log, open its history, then mark and undo a scheduled synthetic dose. Verify that the displays refresh.
+3. **Document review (75 s).** Open the original synthetic prescription photo and review the extracted fields and safety check. Show a reviewed synthetic lab record with its printed range, flag, or unknown value.
+4. **Compare records (75 s).** Choose **Meals and hydration**, approve both sources, and show dated observations and attribution. The deterministic comparison stays within NOVA.
+5. **Daily reports and alerts (55 s).** Show the saved automatic report and its time zone. Explain that medication reminders are scheduled locally, while report notices and weather planning notices are checked while NOVA is open.
+6. **Emergency workflow (45 s).** Use the SOS simulation and show its status. Stop before opening a dialer or sending a real message.
+7. **Close (30 s).** Report **466 backend and 175 Flutter regression tests** from final stabilization. Identify live-provider, hosted Cron, and signed-device checks separately. Describe NOVA as an evidence-grounded assistant with bounded comparisons.
+
+If a live dependency fails, move to the offline scan build or a labeled recording. Describe which implementation is running before resuming the demonstration.
