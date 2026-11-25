@@ -12,6 +12,7 @@ import '../widgets/pressable.dart';
 import 'medications_screen.dart';
 import 'symptoms_screen.dart';
 import 'track_history.dart';
+import 'wearable_activity_screen.dart';
 
 /// Track tab: log water, sleep and mood. Saves to Supabase, then asks the
 /// shell to reload Home.
@@ -277,6 +278,13 @@ class _TrackScreenState extends State<TrackScreen> {
                 ),
               ],
             ),
+          ),
+          const SizedBox(height: NovaSpace.gap),
+          NovaButton(
+            label: 'Import steps and sleep',
+            icon: Icons.watch_outlined,
+            kind: NovaButtonKind.secondary,
+            onPressed: () => openWearableActivity(context),
           ),
           const SizedBox(height: NovaSpace.gap),
           const TrackHistory(),

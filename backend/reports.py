@@ -8,6 +8,7 @@ import daily_metrics as metrics
 import safety
 import symptoms
 import tools
+import wearable_daily
 from db import DBError
 
 async def _day_rows(db, table: str, cols: str, ts: str, bounds, extra: dict | None = None):
@@ -70,6 +71,10 @@ async def build_daily_data(db, day: date, *, bounds=None) -> dict:
         goals = profiles[0] if profiles else {}
     except DBError:
         goals = {}
+    try:
+        imported = (await wearable_daily.read(db, {day: bounds})).get(day.isoformat(), {})
+    except DBError:
+        imported = {}
     taken, unassigned = await _day_doses(db, day, bounds)
     meds = (await tools.get_medications(db, {}, day=day, history=True))["medications"]
     symptom_rows = await _day_rows(db, "symptom_logs", symptoms.SUMMARY_COLUMNS, "started_at", bounds)
@@ -89,12 +94,19 @@ async def build_daily_data(db, day: date, *, bounds=None) -> dict:
         mood = metrics.mood(mood_rows)
     except (TypeError, ValueError, KeyError):
         mood = None
+    imported_sleep = imported.get("sleep")
+    used_imported_sleep = sleep == [] and imported_sleep is not None
+    if used_imported_sleep:
+        sleep_hours = imported_sleep["value"] / 3600
     heart_summary = tools.verified_heart_summary(heart or [])
     return {
         "date": day.isoformat(),
         "water_ml": metrics.total(water, "amount_ml"),
         "water_goal_ml": metrics.number(goals.get("water_goal_ml"), minimum=1, maximum=20000, integer=True),
         "sleep_hours": sleep_hours,
+        "sleep_source": imported_sleep["source"] if used_imported_sleep else None,
+        "imported_sleep": imported_sleep,
+        "steps": imported.get("steps"),
         "sleep_goal_hours": metrics.number(goals.get("sleep_goal_hours"), minimum=0.1, maximum=24),
         "mood": mood,
         "meals": len(meals) if meals is not None else None,
@@ -120,7 +132,14 @@ def highlights(d: dict) -> list[str]:
     sleep = "unknown" if d["sleep_hours"] is None else f"{d['sleep_hours']:g} hours logged"
     if d["sleep_goal_hours"] is not None:
         sleep += f" · saved goal {d['sleep_goal_hours']:g} hours"
+    if d["sleep_source"]:
+        sleep += f" · {d['sleep_source']}"
     out.append(f"Sleep: {sleep}")
+    if d["imported_sleep"] and not d["sleep_source"]:
+        reading = d["imported_sleep"]
+        out.append(f"Imported sleep: {reading['value'] / 3600:.2f} hours · {reading['source']}")
+    steps = d["steps"]
+    out.append(f"Steps: {steps['value']} · {steps['source']}" if steps else "Steps: unknown")
     if d["mood"]:
         out.append(f"Mood: {d['mood']}")
     if d["meals"]:

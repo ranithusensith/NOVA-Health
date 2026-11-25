@@ -234,6 +234,7 @@ class _AiChatReviewState extends State<AiChatReview> {
     'lab_results': 'Lab results',
     'profile': 'Health profile',
     'heart_rate': 'Heart rate',
+    'wearable_activity': 'Imported steps and sleep totals',
     'cycle': 'Menstrual cycle',
   };
 

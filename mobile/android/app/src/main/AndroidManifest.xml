@@ -1,8 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Needed in release builds to reach Supabase and the NOVA API. -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Health Connect: read heart rate from watches and health apps. -->
+    <!-- Health Connect: individually requested read permissions. -->
     <uses-permission android:name="android.permission.health.READ_HEART_RATE"/>
+    <uses-permission android:name="android.permission.health.READ_STEPS"/>
+    <uses-permission android:name="android.permission.health.READ_SLEEP"/>
     <!-- Medicine reminders -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
@@ -35,7 +37,7 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- Health Connect: shows why NOVA asks for heart rate access. -->
+            <!-- Health Connect: shows why NOVA asks for health-data access. -->
             <intent-filter>
                 <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"/>
             </intent-filter>

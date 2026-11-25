@@ -16,6 +16,7 @@ import lab_results
 import rules
 import safety
 import symptoms
+import wearable_daily
 from db import InvalidDBResponse
 
 TZ_OFFSET_MIN = int(os.environ.get("LOCAL_TZ_OFFSET_MIN", "330"))  # Sri Lanka = UTC+5:30
@@ -370,6 +371,19 @@ def verified_heart_summary(rows: list[dict]) -> dict:
     return summary
 
 
+async def get_wearable_activity(db, args: dict, *, calendar=None) -> dict:
+    length = args["days"]
+    if calendar is None:
+        today = local_today()
+        days = [today - timedelta(days=i) for i in range(length - 1, -1, -1)]
+        windows = {day: tuple(map(parse_ts, day_bounds_utc(day))) for day in days}
+    else:
+        dates = calendar.days[-length - 1:-1]
+        windows = dict(zip(dates, zip(calendar.boundaries[-length - 1:-1], calendar.boundaries[-length:]), strict=True))
+    tracked = await wearable_daily.read(db, windows)
+    return {"days": length, "records": {day: tracked[day] for day in sorted(tracked)}}
+
+
 async def get_cycle(db, args: dict) -> dict:
     rows = await db.select("period_logs", "start_date,end_date", order="start_date.desc", limit=8)
     return summarize_cycle(rows)
@@ -429,6 +443,9 @@ TOOLS: dict[str, ToolSpec] = {
     "get_heart_rate": ToolSpec(
         "Heart rate summary (latest, average, min, max, resting average).",
         'args: {"days": 1-30 (default 7)}', get_heart_rate, "heart rate"),
+    "get_wearable_activity": ToolSpec(
+        "Imported daily totals of steps and recorded time asleep. Missing days have no verified total.",
+        'args: {"days": 1-30 (default 7)}', get_wearable_activity, "wearable activity"),
     "get_lab_results": ToolSpec(
         "Saved lab observations. Quote result text and comparison operators exactly. A threshold is not an exact "
         "measurement. Report a flag only as recorded; never infer normality or diagnose from these observations.",
@@ -456,7 +473,7 @@ def clean_args(name: str, raw) -> dict:
         if kind not in KINDS:
             raise ValueError("kind must be one of: " + ", ".join(KINDS))
         return {"kind": kind, "days": _days(raw.get("days"))}
-    if name == "get_heart_rate":
+    if name in ("get_heart_rate", "get_wearable_activity"):
         return {"days": _days(raw.get("days"))}
     return {}
 
@@ -476,6 +493,8 @@ async def run_tool(name: str, raw_args, db, *, calendar=None) -> dict:
         return await get_recent_logs(db, args, calendar=calendar)
     if name == "get_heart_rate":
         return await get_heart_rate(db, args, calendar=calendar)
+    if name == "get_wearable_activity":
+        return await get_wearable_activity(db, args, calendar=calendar)
     return await TOOLS[name].fn(db, args)
 
 

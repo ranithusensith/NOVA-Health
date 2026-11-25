@@ -23,6 +23,7 @@ _LABELS = {
     "mood": "Mood logs", "symptoms": "Symptom logs", "heart rate": "Heart-rate records",
     "cycle": "Period logs", "lab results": "Lab results", "profile": "Health profile",
     "medications": "Medication records", "allergies": "Allergy records",
+    "wearable activity": "Wearable activity",
 }
 
 
@@ -114,6 +115,18 @@ def summarize(source, args, result):
             line = f"{day}: {symptoms.description(row)}"
             lines.append(safety.guard_output(line, limit=None))
         return "Saved symptom entries:\n" + "\n".join(lines), True
+    if source == "wearable activity" and result.get("records"):
+        lines = []
+        for day, row in list(result["records"].items())[-5:]:
+            entries = []
+            if steps := row.get("steps"):
+                entries.append(f"{steps['value']} steps ({steps['source']})")
+            if sleep := row.get("sleep"):
+                entries.append(f"{sleep['value'] / 3600:.2f} hours asleep ({sleep['source']})")
+            if entries:
+                lines.append(f"{day}: {', '.join(entries)}")
+        if lines:
+            return "Imported daily wearable totals:\n" + "\n".join(lines), True
     if source == "heart rate":
         window = args["days"]
         period = "today" if window == 1 else f"last {window} calendar days, including today"

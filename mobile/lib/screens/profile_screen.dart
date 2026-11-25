@@ -23,6 +23,7 @@ import 'heart_rate_screen.dart';
 import 'medications_screen.dart';
 import 'records_screen.dart';
 import 'reminders_screen.dart';
+import 'wearable_activity_screen.dart';
 
 /// 09 Profile and settings — account, daily goals, emergency contacts,
 /// appearance, connected devices, privacy and sign out.
@@ -396,6 +397,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
               // ---------------- Devices
               const SectionLabel('Connected devices'),
               _Group(children: [
+                _NavRow(
+                  icon: Icons.watch_outlined,
+                  title: 'Import steps and sleep',
+                  onTap: () => openWearableActivity(context),
+                ),
                 for (final d in const [
                   ('Apple Watch', Icons.watch_outlined),
                   ('Samsung Galaxy Watch', Icons.watch_outlined),

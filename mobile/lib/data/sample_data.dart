@@ -22,6 +22,8 @@ class HealthSnapshot {
     this.sleepMinutes,
     this.sleepGoalMinutes,
     this.steps,
+    this.stepsSource,
+    this.sleepSource,
     this.stepsGoal,
     this.nextMedication,
     this.medsTakenToday = 0,
@@ -35,6 +37,8 @@ class HealthSnapshot {
   final int? sleepMinutes;
   final int? sleepGoalMinutes;
   final int? steps;
+  final String? stepsSource;
+  final String? sleepSource;
   final int? stepsGoal;
   final Medication? nextMedication;
   final int medsTakenToday;
@@ -55,6 +59,8 @@ class HealthSnapshot {
         sleepMinutes: sleepMinutes,
         sleepGoalMinutes: sleepGoalMinutes,
         steps: steps,
+        stepsSource: stepsSource,
+        sleepSource: sleepSource,
         stepsGoal: stepsGoal,
         nextMedication: clearNextMedication ? null : (nextMedication ?? this.nextMedication),
         medsTakenToday: medsTakenToday ?? this.medsTakenToday,

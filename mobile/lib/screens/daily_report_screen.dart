@@ -150,6 +150,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
     final text = StringBuffer()
       ..writeln('NOVA Health daily report: ${formatToday(_day)}')
       ..writeln('Tracking score: ${trackingScore(s) ?? 'Unknown'}')
+      ..writeln('Steps: ${s.steps == null ? 'unknown' : '${s.steps} from ${s.stepsSource}'}')
       ..writeln('Water: ${s.waterMl == null ? 'unknown' : '${s.waterMl} mL logged'}')
       ..writeln('Sleep: ${s.sleepHours == null ? 'unknown' : '${s.sleepHours!.toStringAsFixed(1)} h'}')
       ..writeln('Nutrition: ${s.calories == null ? 'calorie total unknown' : '${s.calories} kcal estimated'}')
@@ -257,7 +258,21 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
         title: 'Sleep',
         value: sleep == null ? 'Unknown' : '${sleep.toStringAsFixed(1)} h',
         progress: sleep == null || sleepGoal == null ? null : sleep / sleepGoal,
-        insight: sleepGoal == null ? 'No saved sleep goal.' : 'Saved goal: ${sleepGoal.toStringAsFixed(1)} h.',
+        insight: [
+          if (s.sleepSource != null) 'Source: ${s.sleepSource}.',
+          if (s.sleepSource == null && s.wearableSleepHours != null)
+            'Imported sleep: ${s.wearableSleepHours!.toStringAsFixed(1)} h from ${s.wearableSleepSource}.',
+          if (sleepGoal != null) 'Saved goal: ${sleepGoal.toStringAsFixed(1)} h.',
+        ].join(' '),
+      ),
+      const SizedBox(height: 12),
+      _MetricCard(
+        icon: Icons.directions_walk,
+        color: c.steps,
+        title: 'Steps',
+        value: s.steps == null ? 'Unknown' : formatThousands(s.steps!),
+        progress: null,
+        insight: s.stepsSource == null ? 'No imported step total for this date.' : 'Source: ${s.stepsSource}.',
       ),
       const SizedBox(height: 12),
       _MetricCard(
