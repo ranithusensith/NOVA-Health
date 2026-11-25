@@ -4,9 +4,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/api_client.dart';
 import 'care_models.dart';
 import 'daily_metrics.dart';
+import 'health_repository.dart';
+import 'nutrition.dart';
 import 'scan_models.dart';
 import 'wearable_daily.dart';
-import 'health_repository.dart';
 
 /// Medications, dose logs, history and emergency contacts in Supabase.
 /// Every query is scoped to the signed-in user; row-level security enforces it too.
@@ -166,7 +167,7 @@ class CareRepository {
     final water = bucketDailyRows(await dailyRows(_db, owner, 'water_logs', 'amount_ml', from, to));
     final sleep = bucketDailyRows(await dailyRows(_db, owner, 'sleep_logs', 'hours', from, to));
     final mood = bucketDailyRows(await dailyRows(_db, owner, 'mood_logs', 'mood', from, to));
-    final meals = bucketDailyRows(await dailyRows(_db, owner, 'meal_logs', 'calories', from, to));
+    final meals = bucketDailyRows(await dailyRows(_db, owner, 'meal_logs', 'description,calories,nutrients', from, to));
     final doses = await _doseLogs(owner, from, to);
     final meds = await medications(includeEnded: true, accountId: owner);
     final goals = DailyGoals.fromJson(await _db.from('profiles')
@@ -212,24 +213,31 @@ class CareRepository {
     int unassigned,
     List<MedicationRecord> meds,
     WearableDailyReadings? imported,
-  ) => DayStats(
-    day: day,
-    waterMl: dailyTotal(water?[day], 'amount_ml'),
-    waterGoalMl: goals.waterMl,
-    sleepHours: sleep != null && sleep[day] == null ? imported?.sleepHours : dailySleep(sleep?[day]),
-    sleepSource: sleep != null && sleep[day] == null ? imported?.sleep?.sourceLabel : null,
-    wearableSleepHours: imported?.sleepHours,
-    wearableSleepSource: imported?.sleep?.sourceLabel,
-    steps: imported?.steps?.value,
-    stepsSource: imported?.steps?.sourceLabel,
-    sleepGoalHours: goals.sleepHours,
-    moodLevel: dailyMood(mood?[day]),
-    dosesTaken: taken,
-    unassignedDoseLogs: unassigned,
-    dosesScheduled: meds.fold(0, (sum, med) => sum + med.dosesOn(day, includeEnded: true).length),
-    mealCount: meals == null ? null : meals[day]?.length ?? 0,
-    calories: dailyTotal(meals?[day], 'calories'),
-  );
+  ) {
+    final mealRecords = meals == null ? null : [
+      for (final row in meals[day] ?? const <Map<String, dynamic>>[])
+        MealRecord.fromJson(row),
+    ];
+    return DayStats(
+      day: day,
+      waterMl: dailyTotal(water?[day], 'amount_ml'),
+      waterGoalMl: goals.waterMl,
+      sleepHours: sleep != null && sleep[day] == null ? imported?.sleepHours : dailySleep(sleep?[day]),
+      sleepSource: sleep != null && sleep[day] == null ? imported?.sleep?.sourceLabel : null,
+      wearableSleepHours: imported?.sleepHours,
+      wearableSleepSource: imported?.sleep?.sourceLabel,
+      steps: imported?.steps?.value,
+      stepsSource: imported?.steps?.sourceLabel,
+      sleepGoalHours: goals.sleepHours,
+      moodLevel: dailyMood(mood?[day]),
+      dosesTaken: taken,
+      unassignedDoseLogs: unassigned,
+      dosesScheduled: meds.fold(0, (sum, med) => sum + med.dosesOn(day, includeEnded: true).length),
+      mealCount: mealRecords?.length,
+      calories: nutritionTotal(mealRecords, NutritionField.calories) as int?,
+      mealRecords: mealRecords,
+    );
+  }
 
   Future<DayStats> dayStats(DateTime day) async => (await _history(dayOf(day), 1)).single;
 

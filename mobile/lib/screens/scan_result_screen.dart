@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/cupertino.dart';
@@ -11,7 +12,6 @@ import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/glass.dart';
-import '../widgets/pressable.dart';
 import '../widgets/scroll_edge_fade.dart';
 import '../widgets/states.dart';
 import 'scan_camera_screen.dart';
@@ -123,6 +123,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   ];
   List<_ScanField> get _fields => [for (final g in _groups) ...g.fields];
   bool _saving = false;
+  bool _showPhoto = false;
+  late final MemoryImage? _photo = switch (widget.imageBytes) {
+    final bytes? when bytes.isNotEmpty => MemoryImage(bytes),
+    _ => null,
+  };
   late PrescriptionSafetyCheck? _safetyCheck = widget.scan.safetyCheck;
   String? _reviewToken;
   String? _confirmationError;
@@ -150,6 +155,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
   @override
   void dispose() {
+    if (_photo case final photo?) unawaited(photo.evict());
     for (final f in _fields) {
       f.controller.dispose();
     }
@@ -511,7 +517,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                   padding: const EdgeInsets.fromLTRB(12, 12, 16, 12),
                   child: Row(
                     children: [
-                      _PhotoThumb(bytes: widget.imageBytes),
+                      _PhotoThumb(photo: _photo),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
@@ -526,16 +532,31 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                           ],
                         ),
                       ),
-                      Pressable(
-                        onTap: () {},
-                        child: SizedBox(
-                          height: 44,
-                          child: Center(child: Text('View', style: NovaType.subhead.copyWith(fontWeight: FontWeight.w600, color: c.primary))),
+                      if (_photo != null)
+                        TextButton(
+                          onPressed: () => setState(() => _showPhoto = !_showPhoto),
+                          child: Text(_showPhoto ? 'Hide photo' : 'View photo'),
                         ),
-                      ),
                     ],
                   ),
                 ),
+                if (_photo case final photo? when _showPhoto) ...[
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 340,
+                    child: InteractiveViewer(
+                      maxScale: 5,
+                      child: Image(
+                        image: photo,
+                        fit: BoxFit.contain,
+                        semanticLabel: 'Original prescription photo for comparison',
+                        errorBuilder: (_, error, stackTrace) => const Center(
+                          child: Text('Could not open the prescription photo.'),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: NovaSpace.gap),
                 _safetyCard(context),
                 const SizedBox(height: NovaSpace.gap),
@@ -668,16 +689,21 @@ class _FieldRow extends StatelessWidget {
 }
 
 class _PhotoThumb extends StatelessWidget {
-  const _PhotoThumb({this.bytes});
-  final Uint8List? bytes;
+  const _PhotoThumb({this.photo});
+  final MemoryImage? photo;
 
   @override
   Widget build(BuildContext context) {
-    if (bytes != null) {
+    if (photo != null) {
       return ExcludeSemantics(
         child: ClipRRect(
           borderRadius: BorderRadius.circular(16),
-          child: Image.memory(bytes!, width: 56, height: 56, fit: BoxFit.cover),
+          child: Image(
+            image: photo!, width: 56, height: 56, fit: BoxFit.cover,
+            errorBuilder: (_, error, stackTrace) => const SizedBox(
+              width: 56, height: 56, child: Icon(Icons.broken_image_outlined),
+            ),
+          ),
         ),
       );
     }

@@ -95,13 +95,13 @@ def test_not_a_prescription(client, monkeypatch):
 
 
 # ------------------------------------------------------------ food
-def test_food_success_and_clamping(client, monkeypatch, meal_photo):
+def test_food_success_and_unknown_for_out_of_range_estimates(client, monkeypatch, meal_photo):
     mock_llm(monkeypatch, {"is_food": True, "description": "Rice and curry", "calories": 99999,
                            "protein_g": "20", "carbs_g": 90, "fat_g": -5, "confidence": 0.7})
     res = post_image(client, "/api/v1/scan/food", meal_photo, "meal.png")
     assert res.status_code == 200
     d = res.json()["data"]
-    assert d["calories"] == 5000  # clamped
+    assert d["calories"] is None
     assert d["nutrients"] == {"protein_g": 20.0, "carbs_g": 90.0, "fat_g": None}
 
 

@@ -12,6 +12,7 @@ from typing import Awaitable, Callable
 from uuid import UUID
 
 import daily_metrics
+import nutrition
 import lab_results
 import rules
 import safety
@@ -63,7 +64,7 @@ KINDS = {
     "water": ("water_logs", "amount_ml,logged_at", "logged_at"),
     "sleep": ("sleep_logs", "hours,logged_at", "logged_at"),
     "mood": ("mood_logs", "mood,logged_at", "logged_at"),
-    "meals": ("meal_logs", "description,calories,logged_at", "logged_at"),
+    "meals": ("meal_logs", "calories,logged_at", "logged_at"),
     "symptoms": ("symptom_logs", f"{symptoms.SUMMARY_COLUMNS},notes", "started_at"),
 }
 
@@ -110,7 +111,7 @@ def summarize_logs(kind: str, rows: list[dict], days: int, calendar=None) -> dic
         out["low_or_bad_days"] = sum(1 for v in per_day.values() if any(m in ("low", "bad") for m in v))
     elif kind == "meals":
         per_day = {
-            d: {"kcal": daily_metrics.total(v, "calories"), "meals": len(v)} for d, v in by_day.items()
+            d: {"kcal": nutrition.total(v, "calories"), "meals": len(v)} for d, v in by_day.items()
         }
         out["per_day"] = dict(sorted(per_day.items()))
         kc = [v["kcal"] for v in per_day.values() if v["kcal"] is not None]

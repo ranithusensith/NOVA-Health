@@ -68,7 +68,8 @@ class _WearableActivityScreenState extends State<WearableActivityScreen> {
           children: [
             const Text(
                 'Import up to seven days from Apple Health or Health Connect. '
-                'NOVA saves daily totals to this account and requests read access only for the metric you choose.'),
+                'NOVA saves daily totals to this account and requests read access only for the metric you choose. '
+                'The source identifies the health platform. Check that platform to see which devices share data.'),
             const SizedBox(height: 16),
             for (final metric in WearableMetric.values) ...[
               NovaCard(

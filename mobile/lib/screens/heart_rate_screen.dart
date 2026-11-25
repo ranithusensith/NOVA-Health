@@ -199,8 +199,8 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
                 ],
                 const SizedBox(height: NovaSpace.gap),
                 NovaButton(label: 'Add a reading', icon: CupertinoIcons.add, onPressed: _addReading),
-                const SectionLabel('Connect your watch or health app'),
-                _connectCard(c),
+                const SectionLabel('Health platform import'),
+                _importCard(c),
                 if (readings.isNotEmpty) ...[
                   const SectionLabel('Last 7 days'),
                   _historyList(c, readings),
@@ -226,7 +226,7 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
       return EmptyStateCard(
         icon: CupertinoIcons.heart,
         title: 'No heart rate yet',
-        body: 'Add a reading by hand, or connect your watch or health app below to import them.',
+        body: 'Add a reading by hand or import from a supported health platform.',
         actionLabel: 'Add a reading',
         onAction: _addReading,
       );
@@ -313,7 +313,7 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
     );
   }
 
-  Widget _connectCard(NovaColors c) {
+  Widget _importCard(NovaColors c) {
     final sync = HeartSync.instance;
     final ios = Theme.of(context).platform == TargetPlatform.iOS;
     return NovaCard(
@@ -331,7 +331,7 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
                     Text(sync.supported ? sync.sourceName : 'Health app',
                         style: NovaType.headline.copyWith(color: c.textPrimary)),
                     Text(
-                      _lastSync == null ? 'Not synced yet' : 'Last synced ${_ago(_lastSync!)}',
+                      _lastSync == null ? 'No prior import shown' : 'Last import ${_ago(_lastSync!)}',
                       style: NovaType.subhead.copyWith(color: c.textSecondary),
                     ),
                   ],
@@ -343,16 +343,13 @@ class _HeartRateScreenState extends State<HeartRateScreen> with SingleTickerProv
           Text(
             !sync.supported
                 ? 'Heart rate import is available on supported iOS and Android devices. You can still add a reading by hand.'
-                : ios
-                ? 'Import heart rate from Apple Health, including readings from an Apple Watch, into your '
-                    'NOVA account. NOVA has read-only access to Heart Rate.'
-                : 'Samsung Galaxy Watch, Fitbit, Garmin and other watches can share heart rate with Health '
-                    'Connect through their own apps. NOVA reads it from there (read only).',
+                : 'Import heart-rate readings shared with ${sync.sourceName}. NOVA requests read access. '
+                    'Check the health platform to see which devices share data.',
             style: NovaType.footnote.copyWith(color: c.textSecondary),
           ),
           const SizedBox(height: 12),
           NovaButton(
-            label: _syncing ? 'Importing…' : (_lastSync == null ? 'Connect and import' : 'Import latest'),
+            label: _syncing ? 'Importing…' : 'Import heart rate',
             kind: NovaButtonKind.secondary,
             icon: CupertinoIcons.arrow_2_circlepath,
             onPressed: (_syncing || !sync.supported) ? null : _sync,

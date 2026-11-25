@@ -66,6 +66,17 @@ Future<void> _submit(WidgetTester tester, String question,
 }
 
 void main() {
+  testWidgets('assistant exposes the typed composer and no dictate control', (tester) async {
+    await tester.pumpWidget(NovaApp(
+      home: Scaffold(body: AssistantScreen(api: _ChatApi())),
+    ));
+    final composer = tester.widget<TextField>(find.byType(TextField));
+    expect(composer.enableIMEPersonalizedLearning, isFalse);
+    expect(composer.enableSuggestions, isFalse);
+    expect(find.bySemanticsLabel('Send'), findsOneWidget);
+    expect(find.bySemanticsLabel('Dictate'), findsNothing);
+  });
+
   testWidgets('failed preflight offers a manual call and never requests AI consent', (tester) async {
     final api = _ChatApi()..preflightFailure = ApiException('Synthetic transport failure');
     final calls = <String>[];

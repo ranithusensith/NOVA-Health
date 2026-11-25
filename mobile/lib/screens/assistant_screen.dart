@@ -304,11 +304,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
                     ),
                   ),
                   Pressable(
-                    onTap: () {},
-                    semanticLabel: 'Dictate',
-                    child: SizedBox(width: 44, height: 44, child: Icon(CupertinoIcons.mic, size: 22, color: c.textPrimary)),
-                  ),
-                  Pressable(
                     onTap: () => _send(_input.text),
                     semanticLabel: 'Send',
                     child: Container(
