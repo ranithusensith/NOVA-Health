@@ -1,6 +1,7 @@
 """Exercise API error contracts with synthetic upstreams only."""
 
 import json
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 import ai_privacy
 import llm
 import main
+import tools
 
 ACCOUNT = "00000000-0000-4000-8000-000000000801"
 MARKER = "SYNTHETIC-PRIVATE-ERROR-MARKER"
@@ -199,6 +201,33 @@ def test_assistant_summary_reads_evidence_as_the_authenticated_account(upstreams
     assert data["sources"] == ["water"]
     assert requests.count("/rest/v1/water_logs") == 1
     assert requests.count("/rest/v1/ai_processing_consents") == 3
+
+
+def test_assistant_comparison_uses_owner_filters_and_only_the_two_consented_tables(upstreams, monkeypatch):
+    client, responses, requests = upstreams
+    monkeypatch.setattr(tools, "utc_now", lambda: datetime(2026, 10, 25, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(main, "_comparison_counts", {})
+    responses["/rest/v1/water_logs"] = httpx.Response(200, json=[
+        {"amount_ml": 725, "logged_at": "2026-10-24T05:00:00Z"},
+    ])
+    responses["/rest/v1/meal_logs"] = httpx.Response(200, json=[
+        {"calories": 264, "logged_at": "2026-10-24T05:00:00Z"},
+    ])
+    body = {
+        "comparison": "meals_water",
+        "expected_account": ACCOUNT,
+        "consented_sources": ["meals", "water"],
+        "local_calendar": {"today": "2026-10-25", "midnight_offsets": [0] * 31},
+    }
+    response = client.post("/api/v1/assistant/comparison", headers=AUTH, json=body)
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    assert "264 kcal estimated" in response.text and "725 mL logged" in response.text
+    assert requests.count("/auth/v1/user") == 1
+    assert sorted(requests[1:]) == ["/rest/v1/meal_logs", "/rest/v1/water_logs"]
+    requests.clear()
+    body["expected_account"] = "00000000-0000-4000-8000-000000000899"
+    response = client.post("/api/v1/assistant/comparison", headers=AUTH, json=body)
+    assert response.status_code == 403 and requests == ["/auth/v1/user"]
 
 
 @pytest.mark.parametrize("model_output", [

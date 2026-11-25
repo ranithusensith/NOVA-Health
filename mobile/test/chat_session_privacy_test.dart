@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nova_health/auth_gate.dart';
+import 'package:nova_health/data/record_comparison.dart';
 import 'package:nova_health/main.dart';
 import 'package:nova_health/screens/assistant_screen.dart';
 import 'package:nova_health/services/api_client.dart';
@@ -21,6 +22,8 @@ class _ChatApi implements ApiClient {
   Object? preflightFailure;
   String? preflightReply;
   int consentChecks = 0;
+  final comparisons = <(RecordComparison, String, List<String>)>[];
+  Future<AssistantReply>? comparisonReply;
 
   @override
   Future<String?> checkAssistantEmergency(String message) async {
@@ -47,6 +50,16 @@ class _ChatApi implements ApiClient {
   }
 
   @override
+  Future<AssistantReply> compareRecords(RecordComparison comparison,
+      {required String expectedAccount, required List<String> consentedSources}) async {
+    comparisons.add((comparison, expectedAccount, consentedSources));
+    return comparisonReply ?? AssistantReply.fromJson({
+      'reply': 'Synthetic verified same-day summary',
+      'sources': ['sleep', 'steps'],
+    });
+  }
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -66,6 +79,74 @@ Future<void> _submit(WidgetTester tester, String question,
 }
 
 void main() {
+  testWidgets('record comparison asks for both sources and displays attribution without AI sharing',
+      (tester) async {
+    final api = _ChatApi();
+    await tester.pumpWidget(NovaApp(home: Scaffold(body: AssistantScreen(api: api))));
+    await tester.tap(find.text('Compare records'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('never sent to Google Gemini'), findsOneWidget);
+    final submit = find.widgetWithText(FilledButton, 'Compare');
+    expect(tester.widget<FilledButton>(submit).onPressed, isNull);
+    await tester.tap(find.widgetWithText(CheckboxListTile, 'Sleep logs'));
+    await tester.pump();
+    expect(tester.widget<FilledButton>(submit).onPressed, isNull);
+    expect(api.comparisons, isEmpty);
+    await tester.tap(find.widgetWithText(CheckboxListTile, 'Imported step totals'));
+    await tester.pump();
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+    final (pair, account, sources) = api.comparisons.single;
+    expect(pair, RecordComparison.sleepSteps);
+    expect(account, 'synthetic-first-account');
+    expect(sources, ['sleep', 'steps']);
+    expect(api.consentChecks, 0);
+    expect(api.history, isEmpty);
+    expect(find.text('Synthetic verified same-day summary'), findsOneWidget);
+    expect(find.text('Sources: Sleep logs, Imported step totals'), findsOneWidget);
+  });
+
+  testWidgets('switching pair clears both approvals and cancelling fetches nothing', (tester) async {
+    final api = _ChatApi();
+    await tester.pumpWidget(NovaApp(home: Scaffold(body: AssistantScreen(api: api))));
+    await tester.tap(find.text('Compare records'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(CheckboxListTile, 'Sleep logs'));
+    await tester.tap(find.widgetWithText(CheckboxListTile, 'Imported step totals'));
+    await tester.pump();
+    await tester.tap(find.byType(DropdownButton<RecordComparison>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Meals and hydration').last);
+    await tester.pumpAndSettle();
+    for (final label in ['Confirmed meal logs', 'Water logs']) {
+      expect(tester.widget<CheckboxListTile>(find.widgetWithText(CheckboxListTile, label)).value, isFalse);
+    }
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Compare')).onPressed, isNull);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(api.comparisons, isEmpty);
+  });
+
+  testWidgets('reset ignores a late record comparison', (tester) async {
+    final pendingComparison = Completer<AssistantReply>();
+    final api = _ChatApi()..comparisonReply = pendingComparison.future;
+    await tester.pumpWidget(NovaApp(home: Scaffold(body: AssistantScreen(api: api))));
+    await tester.tap(find.text('Compare records'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(CheckboxListTile, 'Sleep logs'));
+    await tester.tap(find.widgetWithText(CheckboxListTile, 'Imported step totals'));
+    await tester.pump();
+    await tester.tap(find.text('Compare'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(api.comparisons, hasLength(1));
+    await tester.tap(find.bySemanticsLabel('New conversation'));
+    await tester.pump();
+    pendingComparison.complete(const AssistantReply('Late synthetic comparison'));
+    await tester.pumpAndSettle();
+    expect(find.text('Late synthetic comparison'), findsNothing);
+  });
+
   testWidgets('assistant exposes the typed composer and no dictate control', (tester) async {
     await tester.pumpWidget(NovaApp(
       home: Scaffold(body: AssistantScreen(api: _ChatApi())),

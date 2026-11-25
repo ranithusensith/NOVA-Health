@@ -177,6 +177,7 @@ A reviewed assistant request can carry `weather: {"city_id": 123, "consent": tru
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/assistant/chat` | Send a reviewed question to Gemini after opt-in |
+| POST | `/assistant/comparison` | Compare two approved record categories on the NOVA backend |
 | POST | `/symptoms/check` | Check an authenticated, unsaved symptom draft using NOVA’s local red-flag rules |
 | GET | `/privacy/ai` | Read provider availability, disclosure version and current account consent |
 | POST | `/privacy/ai` | Enable with the current disclosure version, or revoke consent |
@@ -405,7 +406,19 @@ Gemini can select read-only tools allowed for the reviewed turn. NOVA builds the
 
 The assistant summarizes saved records with a bounded lookback. Averages are rounded and use logged days only. Missing or unreadable entries, multiple sleep entries on the same calendar day, conflicting heart-rate readings at the same instant, and differing lab entries for the same test and report date can prevent a numerical summary. Check Medical records for full lab values, units, ranges, flags, and rows omitted by the summary. Saved records may be incomplete, outdated, or entered incorrectly. The assistant does not diagnose, provide open-ended model advice, or verify the original clinical measurement. Clinical and live-provider validation of tool selection are still pending.
 
-### 6.7 Error example
+### 6.7 On-demand record comparison
+
+`POST /api/v1/assistant/comparison` requires the caller's bearer token, `expected_account` (the signed-in UUID), `comparison`, `consented_sources`, and `local_calendar` (the device's local date and 31 midnight UTC offsets). The requested pair determines the only accepted source IDs.
+
+| Comparison | Required source IDs |
+| --- | --- |
+| `sleep_steps` | `sleep`, `steps` |
+| `medication_symptoms` | `scheduled_doses`, `symptoms` |
+| `meals_water` | `meals`, `water` |
+
+The response returns `data.reply`, `data.sources` for the evidence actually shown, and `data.emergency`. The endpoint rejects mismatched accounts, missing or extra sources, and unexpected fields before reading records. When both dose and symptom categories are approved, the existing acute symptom check runs first and can preempt the comparison. The endpoint accepts no free-text question or proposed answer, makes no provider calls, and returns `Cache-Control: no-store`.
+
+### 6.8 Error example
 
 ```
 POST /api/v1/tracking/water
