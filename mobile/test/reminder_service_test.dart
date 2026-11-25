@@ -143,6 +143,23 @@ void main() {
     expect(host.pending, hasLength(1));
   });
 
+  test('outdoor notice is immediate, private and holds no forecast or account payload', () async {
+    await service.init();
+    await service.sync();
+    await service.showOutdoorNotice(_alice, () => false);
+    await service.showOutdoorNotice(_bob, () => true);
+    expect(host.delivered, isEmpty);
+    await service.showOutdoorNotice(_alice, () => true);
+    final notice = host.calls.singleWhere((call) => call.method == 'show').arguments as Map;
+    expect(notice['id'], 900003);
+    expect(notice['title'], 'NOVA Health');
+    expect(notice['body'], 'Open NOVA Health to view an update.');
+    expect(notice['payload'], anyOf(isNull, isEmpty));
+    await service.clearOutdoorNotice();
+    expect(host.delivered, isEmpty);
+    expect(host.pending, hasLength(1));
+  });
+
   for (final target in [TargetPlatform.android, TargetPlatform.iOS]) {
     test(
         '$target schedules dated generic requests and opt-in is limited to the account',

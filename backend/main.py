@@ -305,6 +305,10 @@ class WeatherContext(BaseModel):
     consent: StrictBool
 
 
+class WeatherNoticeRequest(WeatherContext):
+    expected_account: uuid.UUID
+
+
 class ChatRequest(BaseModel):
     local_calendar: DeviceCalendar | None = None
     weather: WeatherContext | None = None
@@ -671,6 +675,20 @@ async def current_weather(
         return {"data": await weather.service.forecast(city_id)}
     except weather.CityNotFound:
         raise ApiError(404, "INVALID_CITY", "Choose a city from the weather search results.") from None
+
+
+@app.post("/api/v1/weather/outdoor-notice")
+async def outdoor_weather_notice(body: WeatherNoticeRequest, user: dict = Depends(current_user)):
+    if str(body.expected_account) != user["id"]:
+        raise ApiError(403, "FORBIDDEN", "Use the account that enabled weather notices.")
+    if not body.consent:
+        raise ApiError(400, "REVIEW_REQUIRED", "Enable outdoor planning notices for this city first.")
+    _check_quota(_weather_counts, user["id"], 60, "weather lookup")
+    try:
+        snapshot = await weather.service.forecast(body.city_id)
+    except (weather.CityNotFound, weather.Unavailable):
+        return {"data": {"status": "unavailable"}}
+    return {"data": weather.outdoor_notice(snapshot, body.city_id, weather.now())}
 
 
 class SymptomSafetyDraft(BaseModel):

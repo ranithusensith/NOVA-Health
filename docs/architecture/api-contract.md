@@ -172,6 +172,8 @@ Both endpoints require a signed-in session. City results include an ID, name, re
 
 A reviewed assistant request can carry `weather: {"city_id": 123, "consent": true}` when the user opts in for that reply. NOVA fetches the selected city's weather after the existing AI consent and emergency checks. It appends only live evidence and labels the source as `weather`. The city selection and weather observations are excluded from the Gemini payload.
 
+`POST /api/v1/weather/outdoor-notice` accepts the requested `city_id`, matching `expected_account`, and strict `consent: true` from the separately opted-in device. It returns `eligible`, `below_threshold`, `missing`, `stale`, or `unavailable`. The two live outcomes include the city ID, city date, public source, probability, fetch time, and validity deadline. The endpoint reads no health tables and schedules no notifications. The client gates delivery on freshness, foreground state, device permission, current account, and its local date claim.
+
 ### 5.8 AI Assistant and Reports
 
 | Method | Path | Purpose |

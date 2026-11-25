@@ -111,6 +111,71 @@ def test_individual_missing_fields_stay_unknown_and_bad_units_are_rejected(sessi
     assert result["forecast"][0]["precipitation_pct"] is None
 
 
+NOTICE_ACCOUNT = "00000000-0000-4000-8000-000000000023"
+NOTICE_URL = "/api/v1/weather/outdoor-notice"
+
+
+def notice_request(**overrides):
+    return {"city_id": CITY["id"], "expected_account": NOTICE_ACCOUNT, "consent": True, **overrides}
+
+
+def test_outdoor_notice_requires_explicit_consent_and_correct_account(session):
+    client, db, calls, _, _ = session
+    db.user_id = NOTICE_ACCOUNT
+    assert client.post(NOTICE_URL, json=notice_request(consent=False)).status_code == 400
+    assert client.post(NOTICE_URL, json=notice_request(consent="true")).status_code == 422
+    assert client.post(NOTICE_URL, json=notice_request(
+        expected_account="00000000-0000-4000-8000-000000000024")).status_code == 403
+    assert not calls and db.selects == []
+
+
+@pytest.mark.parametrize(("chance", "status"), [(60, "eligible"), (59, "below_threshold"), (None, "missing"), (101, "missing")])
+def test_outdoor_notice_requires_verified_city_date_and_probability(session, chance, status):
+    client, db, calls, responses, _ = session
+    db.user_id = NOTICE_ACCOUNT
+    responses["forecast"]["daily"]["precipitation_probability_max"] = [chance, 100, 0]
+    response = client.post(NOTICE_URL, json=notice_request())
+    assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+    data = response.json()["data"]
+    assert data["status"] == status and db.selects == []
+    assert NOTICE_ACCOUNT not in response.text
+    assert all(NOTICE_ACCOUNT not in str(call.url) for call in calls)
+    if status == "missing":
+        assert data == {"status": "missing"}
+    else:
+        assert data["date"] == "2026-11-25" and data["precipitation_pct"] == chance
+        assert data["city_id"] == CITY["id"] and data["source"] == "Open-Meteo"
+        assert "wellness" not in data and "current" not in data
+
+
+def test_notice_provider_failure_never_uses_stale_forecast(session):
+    client, db, _, responses, clock = session
+    db.user_id = NOTICE_ACCOUNT
+    assert client.post(NOTICE_URL, json=notice_request()).json()["data"]["status"] == "eligible"
+    responses["forecast"] = httpx.ReadTimeout("Synthetic timeout")
+    clock[0] = NOW + timedelta(minutes=16)
+    assert client.post(NOTICE_URL, json=notice_request()).json()["data"] == {"status": "stale"}
+    clock[0] = NOW + timedelta(hours=4)
+    assert client.post(NOTICE_URL, json=notice_request()).json()["data"] == {"status": "unavailable"}
+
+
+def test_notice_cannot_be_delivered_across_selected_city_midnight(session):
+    _, _, _, _, clock = session
+    city = weather._city(CITY)
+    midnight = datetime(2026, 11, 25, 18, 30, tzinfo=timezone.utc)
+    clock[0] = midnight - timedelta(minutes=1)
+    snapshot = weather.WeatherService._view(city, {
+        "city": city.public(), "source": "Open-Meteo", "current": None,
+        "fetched_at": clock[0], "fresh_until": midnight + timedelta(minutes=10),
+        "expires_at": midnight + timedelta(hours=1),
+        "forecast": [{"date": "2026-11-25", "precipitation_pct": 95}],
+    }, stale=False)
+    candidate = weather.outdoor_notice(snapshot, city.id, clock[0])
+    assert candidate["valid_until"] == midnight
+    assert weather.outdoor_notice(snapshot, city.id, midnight) == {"status": "stale"}
+    assert weather.outdoor_notice(snapshot, city.id + 1, clock[0]) == {"status": "unavailable"}
+
+
 @pytest.mark.parametrize("problem", [httpx.ReadTimeout("fixture"), httpx.Response(503), httpx.Response(302)])
 def test_provider_outage_uses_bounded_stale_cache_then_unavailable(session, problem):
     client, _, _, responses, clock = session

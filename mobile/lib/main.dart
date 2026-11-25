@@ -10,6 +10,7 @@ import 'data/app_prefs.dart';
 import 'screens/demo_home.dart';
 import 'services/automatic_report_notices.dart';
 import 'services/emergency_service.dart';
+import 'services/outdoor_alerts.dart';
 import 'services/privacy_diagnostics.dart';
 import 'services/reminder_service.dart';
 import 'theme/nova_settings.dart';
@@ -37,6 +38,7 @@ Future<void> main() async {
       if (config.canConnect) {
         ReminderService.instance.attach();
         await AutomaticReportNotices.instance.attach();
+        await OutdoorAlerts.instance.attach();
       }
     },
   );

@@ -24,6 +24,13 @@ class WeatherCredit extends StatelessWidget {
       );
 }
 
+Future<WeatherCity?> chooseWeatherCity(BuildContext context,
+    {Future<List<WeatherCity>> Function(String)? search}) =>
+    showDialog<WeatherCity>(
+      context: context,
+      builder: (_) => _CityPicker(search: search ?? ApiClient.instance.searchWeatherCities),
+    );
+
 class WeatherCard extends StatelessWidget {
   const WeatherCard({super.key, required this.session, this.search});
 
@@ -31,11 +38,7 @@ class WeatherCard extends StatelessWidget {
   final Future<List<WeatherCity>> Function(String)? search;
 
   Future<void> _choose(BuildContext context) async {
-    final city = await showDialog<WeatherCity>(
-      context: context,
-      builder: (_) =>
-          _CityPicker(search: search ?? ApiClient.instance.searchWeatherCities),
-    );
+    final city = await chooseWeatherCity(context, search: search);
     if (city != null && context.mounted) await session.select(city);
   }
 
