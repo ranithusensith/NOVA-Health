@@ -39,6 +39,7 @@ import agent  # noqa: E402  (after load_dotenv so env vars are set)
 import lab_results  # noqa: E402
 import llm  # noqa: E402
 import notify  # noqa: E402
+import record_comparison  # noqa: E402
 import reports  # noqa: E402
 import rules  # noqa: E402
 import safety  # noqa: E402
@@ -215,6 +216,7 @@ async def get_db(
 # ---------------------------------------------------------------
 _scan_counts: dict[tuple[str, str], int] = {}
 _chat_counts: dict[tuple[str, str], int] = {}
+_comparison_counts: dict[tuple[str, str], int] = {}
 _weather_counts: dict[tuple[str, str], int] = {}
 
 
@@ -311,6 +313,15 @@ class ChatRequest(BaseModel):
         default_factory=list, max_length=7,
     )
     recent_questions: list[Annotated[str, StringConstraints(max_length=400)]] = Field(default_factory=list, max_length=4)
+
+
+class ComparisonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    comparison: record_comparison.Comparison
+    expected_account: uuid.UUID
+    consented_sources: list[record_comparison.Source] = Field(max_length=2)
+    local_calendar: DeviceCalendar
 
 
 class AIConsentRequest(BaseModel):
@@ -591,6 +602,33 @@ async def chat(body: ChatRequest, user: dict = Depends(current_user), db: UserDB
         "warnings": [{"severity": w["severity"], "message": w["message"]} for w in result.warnings],
         "emergency": result.emergency,
     }}
+
+
+@app.post("/api/v1/assistant/comparison")
+async def compare_records(body: ComparisonRequest, db: UserDB = Depends(get_db)):
+    if str(body.expected_account) != db.user_id:
+        raise ApiError(403, "FORBIDDEN", "Use the account that opened the comparison.")
+    required = set(record_comparison.PAIRS[body.comparison])
+    if set(body.consented_sources) != required:
+        raise ApiError(400, "COMPARISON_CONSENT_REQUIRED", "Approve both categories before comparing records.")
+
+    calendar = body.local_calendar.resolve()
+    _check_quota(_comparison_counts, db.user_id, 60, "record comparison")
+    if "symptoms" in required:
+        try:
+            saved = await tools.recent_saved_emergency(db)
+        except DBError:
+            # Match the assistant's fail-closed priority when the consented symptom check fails.
+            raise ApiError(503, "SYMPTOM_CHECK_UNAVAILABLE", "Could not check recent symptoms.") from None
+        if saved:
+            kind, text = saved
+            return {"data": {
+                "reply": safety.saved_emergency_reply(kind, text=text),
+                "sources": ["symptoms"], "emergency": True,
+            }}
+
+    text, sources = await record_comparison.compare(db, body.comparison, calendar, tools.utc_now())
+    return {"data": {"reply": safety.finalize(text, []), "sources": sources, "emergency": False}}
 
 
 @app.get("/api/v1/weather/cities")

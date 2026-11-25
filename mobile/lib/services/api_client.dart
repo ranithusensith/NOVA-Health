@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config.dart';
+import '../data/record_comparison.dart';
 import '../data/scan_models.dart';
 import '../data/symptom_repository.dart';
 import '../data/weather.dart';
@@ -38,6 +39,8 @@ class ApiException implements Exception {
       'REVIEW_REQUIRED' when path.endsWith('/scan/food') =>
         'Review the photo and retake it with only the food visible.',
       'REVIEW_REQUIRED' => 'Review the information and remove identifying details before sharing.',
+      'COMPARISON_CONSENT_REQUIRED' => 'Approve both record categories before comparing.',
+      'SYMPTOM_CHECK_UNAVAILABLE' => 'NOVA could not check recent symptoms. If you need urgent help, call your local emergency number.',
       'OCR_UNAVAILABLE' => 'Private text extraction is unavailable. You can enter clinical text manually.',
       'SCAN_FAILED' => 'Could not find the expected details. Check the image or reviewed text and try again.',
       'INVALID_INPUT' => 'Check the information you entered and try again.',
@@ -279,6 +282,23 @@ class ApiClient {
     return AssistantReply.fromJson(data);
   }
 
+  Future<AssistantReply> compareRecords(
+    RecordComparison comparison, {
+    required String expectedAccount,
+    required List<String> consentedSources,
+  }) async {
+    if (aiAccountId != expectedAccount) {
+      throw ApiException('Use the account that opened the comparison.');
+    }
+    final data = await _postJson('/api/v1/assistant/comparison', {
+      'comparison': comparison.id,
+      'expected_account': expectedAccount,
+      'consented_sources': consentedSources,
+      'local_calendar': deviceCalendar(DateTime.now()),
+    });
+    return AssistantReply.fromJson(data);
+  }
+
   Future<List<WeatherCity>> searchWeatherCities(String city) async {
     final query = Uri(queryParameters: {'query': city}).query;
     final data = await _getJson('/api/v1/weather/cities?$query', timeout: const Duration(seconds: 8));
@@ -339,6 +359,8 @@ class AssistantReply {
     'medicine safety': 'Medication safety checks',
     'heart rate': 'Heart-rate records',
     'wearable activity': 'Imported steps and sleep',
+    'steps': 'Imported step totals',
+    'scheduled_doses': 'Scheduled dose logs',
     'cycle': 'Period logs',
     'lab results': 'Lab results',
   };

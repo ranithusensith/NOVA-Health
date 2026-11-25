@@ -15,6 +15,8 @@ Weather uses an explicitly selected city. NOVA sends the entered city search and
 
 Wearable steps and sleep imports run only when selected on the phone. NOVA stores account-owned daily totals and the calendar boundaries needed to place them correctly. A reviewed Assistant reply can separately opt in to imported steps and sleep. Gemini receives only the selected bounded totals, with no exact dates, times, source identifiers or raw health-platform records. Local reports require no AI consent.
 
+**Compare records** is a separate, on-demand Assistant action. Both sources must be approved for each comparison. NOVA uses the signed-in account's database role to read the approved categories and creates the reply on its backend. The request, observations, and reply stay out of external AI and weather services. A dose-and-symptom comparison applies the existing recent symptom safety check before reading dose logs. Comparison results live in assistant screen memory and are excluded from earlier-question sharing.
+
 ## Storage and deployment
 
 - Apply the [ordered Supabase migrations](database-setup.md) as an authorized migration owner. Migration `004` creates the account-scoped table for the disclosure version and consent timestamp. Users begin opted out when the table is first created. Deploy the matching mobile and API versions. Clients using the previous scan or assistant request format must update.

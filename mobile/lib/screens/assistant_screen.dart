@@ -11,6 +11,7 @@ import '../widgets/glass.dart';
 import '../widgets/pressable.dart';
 import 'ai_privacy_screen.dart';
 import 'emergency_screen.dart';
+import 'record_comparison_dialog.dart';
 import 'weather_card.dart';
 
 enum ChatKind { user, ai, error, typing }
@@ -120,31 +121,62 @@ class _AssistantScreenState extends State<AssistantScreen> {
       });
       _scrollToEnd();
       final response = await api.chat(text, healthData: sharing.healthData, recentQuestions: recent, weatherCityId: sharing.weatherCityId);
-      final replyText = response.text.trim();
-      if (response.emergency) {
-        reply = ChatItem.ai(replyText.isEmpty ? _preflightUnavailable : replyText,
-            sources: response.sources, callForHelp: true);
-      } else {
-        reply = replyText.isEmpty
-            ? ChatItem.error('No reply came back. Please try again.')
-            : ChatItem.ai(replyText, sources: response.sources);
-      }
+      reply = _presentReply(response);
     } on ApiException catch (e) {
       reply = ChatItem.error(e.message);
     } catch (_) {
       reply = ChatItem.error('Could not process this question. Please try again.');
     } finally {
-      if (current()) {
-        setState(() {
-          _waiting = false;
-          final items = [..._items.where((item) => item.kind != ChatKind.typing), if (reply != null) reply];
-          _items = items.length > _transcriptLimit
-              ? items.sublist(items.length - _transcriptLimit)
-              : items;
-        });
-        if (reply != null) _scrollToEnd();
-      }
+      if (current()) _finishTurn(reply);
     }
+  }
+
+  Future<void> _compareRecords() async {
+    final owner = _api.aiAccountId;
+    if (_waiting || owner == null) return;
+    final conversation = _conversation;
+    bool current() => mounted && conversation == _conversation && _api.aiAccountId == owner;
+    setState(() => _waiting = true);
+    ChatItem? reply;
+    try {
+      final consent = await showDialog<ComparisonConsent>(
+        context: context,
+        builder: (_) => const RecordComparisonDialog(),
+      );
+      if (consent == null || !current()) return;
+      setState(() => _items = [..._items, ChatItem.typing]);
+      _scrollToEnd();
+      final response = await _api.compareRecords(
+        consent.comparison, expectedAccount: owner, consentedSources: consent.sources,
+      );
+      reply = _presentReply(response);
+    } on ApiException catch (e) {
+      reply = ChatItem.error(e.message);
+    } catch (_) {
+      reply = ChatItem.error('Could not compare these records. Please try again.');
+    } finally {
+      if (current()) _finishTurn(reply);
+    }
+  }
+
+  ChatItem _presentReply(AssistantReply response) {
+    final text = response.text.trim();
+    if (response.emergency) {
+      return ChatItem.ai(text.isEmpty ? _preflightUnavailable : text,
+          sources: response.sources, callForHelp: true);
+    }
+    return text.isEmpty
+        ? ChatItem.error('No reply came back. Please try again.')
+        : ChatItem.ai(text, sources: response.sources);
+  }
+
+  void _finishTurn(ChatItem? reply) {
+    setState(() {
+      _waiting = false;
+      final items = [..._items.where((item) => item.kind != ChatKind.typing), if (reply != null) reply];
+      _items = items.length > _transcriptLimit ? items.sublist(items.length - _transcriptLimit) : items;
+    });
+    if (reply != null) _scrollToEnd();
   }
 
   Future<void> _callAmbulance() async {
@@ -208,9 +240,17 @@ class _AssistantScreenState extends State<AssistantScreen> {
                       const DisclaimerNote(icon: true),
                       Text('NOVA checks for emergencies first. Google Gemini uses shared questions to choose which records to check.',
                           style: NovaType.caption.copyWith(color: c.textSecondary)),
-                      TextButton(
-                        onPressed: () => openEmergency(context),
-                        child: const Text('Emergency help'),
+                      Wrap(
+                        children: [
+                          TextButton(
+                            onPressed: () => openEmergency(context),
+                            child: const Text('Emergency help'),
+                          ),
+                          TextButton(
+                            onPressed: _waiting ? null : _compareRecords,
+                            child: const Text('Compare records'),
+                          ),
+                        ],
                       ),
                     ],
                   ),
