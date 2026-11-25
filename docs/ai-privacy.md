@@ -15,6 +15,8 @@ Weather uses an explicitly selected city. NOVA sends the entered city search and
 
 Wearable steps and sleep imports run only when selected on the phone. NOVA stores account-owned daily totals and the calendar boundaries needed to place them correctly. A reviewed Assistant reply can separately opt in to imported steps and sleep. Gemini receives only the selected bounded totals, with no exact dates, times, source identifiers or raw health-platform records. Local reports require no AI consent.
 
+Automatic daily reports require a separate account opt-in. A database job produces owner-readable summaries within NOVA and keeps them for 30 days. It uses no external AI or mobile session token. Reports can generate while the user is signed out. Turning generation off removes saved automatic reports. Optional device notices contain only generic text and are checked while that account is signed in and NOVA is open. The app stores no report bodies in its preferences.
+
 **Compare records** is a separate, on-demand Assistant action. Both sources must be approved for each comparison. NOVA uses the signed-in account's database role to read the approved categories and creates the reply on its backend. The request, observations, and reply stay out of external AI and weather services. A dose-and-symptom comparison applies the existing recent symptom safety check before reading dose logs. Comparison results live in assistant screen memory and are excluded from earlier-question sharing.
 
 ## Storage and deployment

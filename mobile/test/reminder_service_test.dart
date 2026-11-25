@@ -56,6 +56,12 @@ class _NotificationHost {
       case 'cancelAllPendingNotifications':
         pending.clear();
         return null;
+      case 'show':
+        delivered.add((call.arguments as Map)['body'] as String);
+        return null;
+      case 'cancel':
+        delivered.clear();
+        return null;
       case 'zonedSchedule':
         final arguments = Map<Object?, Object?>.from(call.arguments as Map);
         if (exactRevoked &&
@@ -119,6 +125,22 @@ void main() {
     service.dispose();
     messenger.setMockMethodCallHandler(_channel, null);
     debugDefaultTargetPlatformOverride = null;
+  });
+
+  test('report notice has generic content only and is cleared independently', () async {
+    await service.init();
+    await service.sync();
+    await service.showReportNotice(_alice, () => false);
+    expect(host.delivered, isEmpty);
+    await service.showReportNotice(_alice, () => true);
+    final notice = host.calls.singleWhere((call) => call.method == 'show').arguments as Map;
+    expect(notice['title'], 'NOVA Health');
+    expect(notice['body'], 'Open NOVA Health to view an update.');
+    expect(notice['payload'], anyOf(isNull, isEmpty));
+    expect(notice.toString(), isNot(contains(_alice)));
+    await service.clearReportNotice();
+    expect(host.delivered, isEmpty);
+    expect(host.pending, hasLength(1));
   });
 
   for (final target in [TargetPlatform.android, TargetPlatform.iOS]) {

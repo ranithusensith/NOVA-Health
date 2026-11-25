@@ -20,6 +20,14 @@ import UserNotifications
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     let messenger = engineBridge.applicationRegistrar.messenger()
+    let reportCalendar = FlutterMethodChannel(name: "nova_health/report_calendar", binaryMessenger: messenger)
+    reportCalendar.setMethodCallHandler { call, result in
+      if call.method == "timeZone" {
+        result(TimeZone.autoupdatingCurrent.identifier)
+      } else {
+        result(FlutterMethodNotImplemented)
+      }
+    }
     let healthKit = FlutterMethodChannel(name: "nova_health/healthkit", binaryMessenger: messenger)
     healthKit.setMethodCallHandler { [weak self] call, result in
       if call.method == "isHealthDataAvailable" {

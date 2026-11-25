@@ -8,6 +8,7 @@ import '../data/daily_metrics.dart';
 import '../data/health_repository.dart';
 import '../data/profile_models.dart';
 import '../data/profile_repository.dart';
+import '../services/automatic_report_notices.dart';
 import '../services/privacy_diagnostics.dart';
 import '../services/reminder_service.dart';
 import '../theme/nova_theme.dart';
@@ -16,6 +17,7 @@ import '../widgets/pressable.dart';
 import '../widgets/scroll_edge_fade.dart';
 import '../widgets/states.dart';
 import 'ai_privacy_screen.dart';
+import 'automatic_reports_screen.dart';
 import 'cycle_screen.dart';
 import 'emergency_screen.dart';
 import 'health_profile_screen.dart';
@@ -187,7 +189,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (ok != true) return;
     try {
       final auth = Supabase.instance.client.auth;
-      await ReminderService.instance.signOut(() => auth.signOut());
+      await AutomaticReportNotices.instance.signOut(
+        () => ReminderService.instance.signOut(() => auth.signOut()),
+      );
     } catch (e) {
       if (mounted) showNovaToast(context, friendlyError(e));
     }
@@ -407,6 +411,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   onTap: () => openHeartRate(context),
                 ),
               ]),
+
+              _NavRow(
+                icon: Icons.event_note_outlined,
+                title: 'Automatic daily reports',
+                onTap: () => openAutomaticReports(context),
+              ),
 
               // ---------------- Privacy
               const SectionLabel('Privacy and about'),

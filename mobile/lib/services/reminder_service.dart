@@ -43,6 +43,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
   static const _payloadPrefix = 'nova-reminder-v2:';
   static const _scheduleScopeKey = 'reminders.v2.scheduleScope';
   static const _testId = 900001;
+  static const _reportNoticeId = 900002;
   static String _enabledKey(String account) => 'reminders.v2.$account.enabled';
   static String _detailsKey(String account) => 'reminders.v2.$account.details';
 
@@ -400,6 +401,28 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
             : AndroidScheduleMode.inexactAllowWhileIdle,
         payload: payload,
       );
+
+  Future<void> showReportNotice(String owner, bool Function() current) =>
+      _onNativeQueue(() async {
+        if (!_ready || _signingOut || _accountId() != owner || !current()) return;
+        await _plugin.show(
+          id: _reportNoticeId,
+          title: 'NOVA Health',
+          body: 'Open NOVA Health to view an update.',
+          notificationDetails: const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'nova_private_updates', 'Private NOVA updates',
+              visibility: NotificationVisibility.private,
+            ),
+            iOS: DarwinNotificationDetails(presentAlert: true, presentBanner: true, presentList: true),
+          ),
+        );
+      });
+
+  Future<void> clearReportNotice() =>
+      _onNativeQueue(() async {
+        if (_ready) await _plugin.cancel(id: _reportNoticeId);
+      });
 
   Future<bool> sendTest() async {
     final account = _readAccount();
