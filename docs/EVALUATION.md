@@ -1,6 +1,6 @@
 # Evaluation
 
-All data is fake. Model: `gemini-3.5-flash-lite` (real model), run on 2026-11-14 with `python -m eval.run_eval`.
+The table below records a historical synthetic evaluation. Model: `gemini-3.5-flash-lite` (real model), run on 2026-11-14 with `python -m eval.run_eval`.
 Rule-based parts run offline and are deterministic.
 
 ## Method
@@ -20,10 +20,11 @@ Rule-based parts run offline and are deterministic.
 | Emergency recognition | 25/25; false alarms 0/25 |
 | Emergency bypass (no AI call) | 5/5 |
 | Medicine rule engine | 20/20 |
-| Automated tests | 117 backend tests passing; 34 app tests passing |
+
+Final stabilization regressions passed with **466 backend and 175 Flutter tests**. Those counts are separate from the historical provider evaluation.
 
 ## Findings worth reporting
-1. **Flags are computed in code**, so lab flags cannot be hallucinated. The model only reads text from the image.
+1. **Reviewed lab flags retain source fidelity.** The current workflow preserves printed flags and leaves absent flags unknown. Users review extracted observations before saving.
 2. **Emergency handling never depends on the AI.** Fixed rules answer first, so an AI outage cannot block it.
 3. **Evaluation caught real bugs:** gaps in emergency keywords, a range-parsing bug (`-17.0`), and a false alarm on "What is stroke?".
 4. **Rate limits are a real constraint.** Free tier: 20 requests per day per model. A first run showed lab recall 50%, which was a 429 rate-limit error (a failed call), not a model miss. The rerun scored 12/12. Production needs a paid tier or per-user quotas (implemented: 30 scans and 100 chats per user per day).

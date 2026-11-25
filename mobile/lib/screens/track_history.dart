@@ -39,7 +39,11 @@ class _TrackHistoryState extends State<TrackHistory> {
   }
 
   void _reload() {
-    if (mounted) setState(() => _future = CareRepository.instance.history(days: 7));
+    if (!mounted) return;
+    final history = CareRepository.instance.history(days: 7);
+    setState(() {
+      _future = history;
+    });
   }
 
   @override

@@ -12,6 +12,7 @@ import '../services/automatic_report_notices.dart';
 import '../services/outdoor_alerts.dart';
 import '../services/privacy_diagnostics.dart';
 import '../services/reminder_service.dart';
+import '../services/secure_auth_storage.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/content.dart';
 import '../widgets/pressable.dart';
@@ -193,7 +194,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final auth = Supabase.instance.client.auth;
       await OutdoorAlerts.instance.signOut(
         () => AutomaticReportNotices.instance.signOut(
-          () => ReminderService.instance.signOut(() => auth.signOut()),
+          () => ReminderService.instance.signOut(() async {
+            try {
+              await auth.signOut();
+            } finally {
+              if (auth.currentUser == null) {
+                await SecureAuthStorage.device.removePersistedSession();
+              }
+            }
+          }),
         ),
       );
     } catch (e) {

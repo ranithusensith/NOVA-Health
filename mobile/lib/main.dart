@@ -13,6 +13,7 @@ import 'services/emergency_service.dart';
 import 'services/outdoor_alerts.dart';
 import 'services/privacy_diagnostics.dart';
 import 'services/reminder_service.dart';
+import 'services/secure_auth_storage.dart';
 import 'theme/nova_settings.dart';
 import 'theme/nova_theme.dart';
 
@@ -29,6 +30,10 @@ Future<void> main() async {
         url: settings.supabaseUrl,
         publishableKey: settings.supabaseKey,
         debug: false,
+        authOptions: FlutterAuthClientOptions(
+          localStorage: SecureAuthStorage.device,
+          pkceAsyncStorage: SecureAuthStorage.device.pkceStorage,
+        ),
       );
       EmergencyService.instance.attach();
     },

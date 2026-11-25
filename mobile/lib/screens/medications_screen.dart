@@ -68,7 +68,10 @@ class _MedicationsScreenState extends State<MedicationsScreen> with WidgetsBindi
 
   void _reload() {
     if (!mounted) return;
-    setState(() => _future = _fetch());
+    final data = _fetch();
+    setState(() {
+      _future = data;
+    });
   }
 
   Future<void> _take(DoseSlot slot) async {

@@ -50,7 +50,16 @@ public final class ReminderBootReceiver extends BroadcastReceiver {
             // A damaged cache cannot be safely replayed.
         }
         if (invalidate) {
-            context.getSystemService(NotificationManager.class).cancelAll();
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
+                manager.cancelAll(); // Clear legacy previews when upgrading.
+            } else {
+                // A time-zone change invalidates medication times only.
+                for (int id = 1; id <= 60; id++) {
+                    manager.cancel(id);
+                }
+                manager.cancel(900001); // Reminder test.
+            }
         }
         if (preferences.edit().putString(CACHE, retained.toString()).commit() && boot) {
             new ScheduledNotificationBootReceiver().onReceive(context, intent);
