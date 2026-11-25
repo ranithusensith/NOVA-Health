@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config.dart';
+import '../data/outdoor_notice.dart';
 import '../data/record_comparison.dart';
 import '../data/scan_models.dart';
 import '../data/symptom_repository.dart';
@@ -310,6 +311,16 @@ class ApiClient {
   Future<WeatherSnapshot> loadWeather(int cityId) async {
     final data = await _getJson('/api/v1/weather/current?city_id=$cityId', timeout: const Duration(seconds: 12));
     return WeatherSnapshot.fromJson(data);
+  }
+
+  Future<OutdoorNotice> outdoorNotice(String owner, int cityId) async {
+    if (aiAccountId != owner) throw ApiException('Use the account that enabled weather notices.');
+    final data = await _postJson('/api/v1/weather/outdoor-notice', {
+      'expected_account': owner,
+      'city_id': cityId,
+      'consent': true,
+    }, timeout: const Duration(seconds: 15));
+    return OutdoorNotice.fromJson(data, cityId);
   }
 
   Future<Map<String, dynamic>> _getJson(

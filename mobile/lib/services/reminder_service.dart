@@ -44,6 +44,7 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
   static const _scheduleScopeKey = 'reminders.v2.scheduleScope';
   static const _testId = 900001;
   static const _reportNoticeId = 900002;
+  static const _outdoorNoticeId = 900003;
   static String _enabledKey(String account) => 'reminders.v2.$account.enabled';
   static String _detailsKey(String account) => 'reminders.v2.$account.details';
 
@@ -403,10 +404,16 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
       );
 
   Future<void> showReportNotice(String owner, bool Function() current) =>
+      _showPrivateUpdate(_reportNoticeId, owner, current);
+
+  Future<void> showOutdoorNotice(String owner, bool Function() current) =>
+      _showPrivateUpdate(_outdoorNoticeId, owner, current);
+
+  Future<void> _showPrivateUpdate(int id, String owner, bool Function() current) =>
       _onNativeQueue(() async {
         if (!_ready || _signingOut || _accountId() != owner || !current()) return;
         await _plugin.show(
-          id: _reportNoticeId,
+          id: id,
           title: 'NOVA Health',
           body: 'Open NOVA Health to view an update.',
           notificationDetails: const NotificationDetails(
@@ -420,8 +427,14 @@ class ReminderService extends ChangeNotifier with WidgetsBindingObserver {
       });
 
   Future<void> clearReportNotice() =>
+      _clearPrivateUpdate(_reportNoticeId);
+
+  Future<void> clearOutdoorNotice() =>
+      _clearPrivateUpdate(_outdoorNoticeId);
+
+  Future<void> _clearPrivateUpdate(int id) =>
       _onNativeQueue(() async {
-        if (_ready) await _plugin.cancel(id: _reportNoticeId);
+        if (_ready) await _plugin.cancel(id: id);
       });
 
   Future<bool> sendTest() async {

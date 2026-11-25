@@ -271,15 +271,43 @@ class WeatherService:
 
     @staticmethod
     def _view(city: City, snapshot: dict, *, stale: bool) -> dict:
-        today = now().astimezone(city.zone).date().isoformat()
+        day = now().astimezone(city.zone).date()
+        today = day.isoformat()
         forecast = [day for day in snapshot["forecast"] if day["date"] >= today]
         if snapshot["current"] is None and not forecast:
             return {"status": "unavailable"}
-        data = {**snapshot, "forecast": forecast, "status": "stale" if stale else "live"}
+        next_midnight = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=city.zone)
+        data = {**snapshot, "forecast": forecast, "status": "stale" if stale else "live",
+                "city_date": today, "city_day_ends_at": next_midnight}
         return {**data, "wellness": None if stale else wellness(data)}
 
 
 service = WeatherService()
+
+
+def outdoor_notice(snapshot: dict, city_id: int, at: datetime) -> dict:
+    state = snapshot.get("status")
+    if state == "stale":
+        return {"status": "stale"}
+    if state != "live" or snapshot.get("source") != SOURCE or (snapshot.get("city") or {}).get("id") != city_id:
+        return {"status": "unavailable"}
+    fetched = snapshot.get("fetched_at")
+    bounds = [snapshot.get(key) for key in ("fresh_until", "expires_at", "city_day_ends_at")]
+    if not isinstance(fetched, datetime) or any(not isinstance(value, datetime) for value in bounds):
+        return {"status": "unavailable"}
+    valid_until = min(bounds)
+    if not fetched <= at < valid_until:
+        return {"status": "stale"}
+    city_date = snapshot.get("city_date")
+    matches = [day for day in snapshot["forecast"] if day["date"] == city_date]
+    chance = _number(matches[0].get("precipitation_pct"), 0, 100) if len(matches) == 1 else None
+    if chance is None:
+        return {"status": "missing"}
+    return {
+        "status": "eligible" if chance >= 60 else "below_threshold",
+        "city_id": city_id, "date": city_date, "source": SOURCE,
+        "precipitation_pct": chance, "fetched_at": fetched, "valid_until": valid_until,
+    }
 
 
 def assistant_evidence(snapshot: dict) -> str | None:
