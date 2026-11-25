@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from functools import partial
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from dotenv import load_dotenv
@@ -36,6 +37,7 @@ import daily_metrics  # noqa: E402
 import ai_privacy  # noqa: E402
 import assistant_evidence  # noqa: E402
 import agent  # noqa: E402  (after load_dotenv so env vars are set)
+import automatic_reports  # noqa: E402
 import lab_results  # noqa: E402
 import llm  # noqa: E402
 import notify  # noqa: E402
@@ -106,7 +108,7 @@ async def safe_api_responses(request: Request, call_next):
         # Exception messages, tracebacks, request URLs and bodies may include patient data.
         error_log.error("API request failed unexpectedly")
         return _error_response(500, "SERVER_ERROR", "Could not process this request.")
-    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/", "/api/v1/medications/", "/api/v1/symptoms/", "/api/v1/weather/")):
+    if request.url.path.startswith(("/api/v1/privacy/", "/api/v1/assistant/", "/api/v1/scan/", "/api/v1/medications/", "/api/v1/symptoms/", "/api/v1/weather/", "/api/v1/reports/")):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -322,6 +324,17 @@ class ComparisonRequest(BaseModel):
     expected_account: uuid.UUID
     consented_sources: list[record_comparison.Source] = Field(max_length=2)
     local_calendar: DeviceCalendar
+
+
+class ReportAccount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_account: uuid.UUID
+
+
+class AutomaticReportSchedule(ReportAccount):
+    enabled: StrictBool
+    time_zone: str | None = Field(default=None, max_length=100)
 
 
 class AIConsentRequest(BaseModel):
@@ -702,6 +715,51 @@ async def daily_report(
     data = await reports.daily_report(db, day, bounds=bounds)
     response.headers["Cache-Control"] = "no-store"
     return {"data": data}
+
+
+@app.get("/api/v1/reports/automatic")
+async def automatic_report_index(db: UserDB = Depends(get_db)):
+    settings = await db.select("daily_report_settings", "time_zone", limit=1)
+    items = await db.select("daily_report_snapshots", "local_date,time_zone,generated_at",
+                            order="local_date.desc", limit=30) if settings else []
+    return {"data": {"time_zone": settings[0]["time_zone"] if settings else None, "reports": items}}
+
+
+@app.put("/api/v1/reports/automatic")
+async def change_automatic_report_schedule(body: AutomaticReportSchedule, db: UserDB = Depends(get_db)):
+    if str(body.expected_account) != db.user_id:
+        raise ApiError(403, "FORBIDDEN", "Use the account that opened report settings.")
+    if body.enabled:
+        try:
+            if not body.time_zone or body.time_zone.startswith(("posix/", "right/")):
+                raise ValueError()
+            ZoneInfo(body.time_zone)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ApiError(400, "INVALID_REPORT_ZONE", "Use a supported report time zone.") from None
+    await db.set_daily_report_schedule(body.enabled, body.time_zone if body.enabled else None)
+    return {"data": {"enabled": body.enabled}}
+
+
+@app.post("/api/v1/reports/automatic/notice")
+async def claim_automatic_report_notice(body: ReportAccount, db: UserDB = Depends(get_db)):
+    if str(body.expected_account) != db.user_id:
+        raise ApiError(403, "FORBIDDEN", "Use the account that opened daily reports.")
+    return {"data": {"claimed": await db.claim_daily_report_notice()}}
+
+
+@app.get("/api/v1/reports/automatic/{day}")
+async def automatic_report_for_day(day: date, db: UserDB = Depends(get_db)):
+    rows = await db.select(
+        "daily_report_snapshots", "local_date,time_zone,generated_at,observations",
+        filters={"local_date": f"eq.{day}"}, limit=1,
+    )
+    if not rows:
+        raise ApiError(404, "REPORT_NOT_AVAILABLE", "This saved report is unavailable.")
+    report = rows[0]
+    return {"data": {
+        "local_date": report["local_date"], "time_zone": report["time_zone"],
+        "generated_at": report["generated_at"], "report": automatic_reports.render(report),
+    }}
 
 
 @app.post("/api/v1/scan/medical-text")

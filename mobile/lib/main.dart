@@ -8,6 +8,7 @@ import 'auth_gate.dart';
 import 'config.dart';
 import 'data/app_prefs.dart';
 import 'screens/demo_home.dart';
+import 'services/automatic_report_notices.dart';
 import 'services/emergency_service.dart';
 import 'services/privacy_diagnostics.dart';
 import 'services/reminder_service.dart';
@@ -33,7 +34,10 @@ Future<void> main() async {
     initializeReminders: () async {
       // Clear unaffiliated notifications even when the app has no configured session.
       await ReminderService.instance.init();
-      if (config.canConnect) ReminderService.instance.attach();
+      if (config.canConnect) {
+        ReminderService.instance.attach();
+        await AutomaticReportNotices.instance.attach();
+      }
     },
   );
   runApp(app);

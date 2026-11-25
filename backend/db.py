@@ -113,6 +113,30 @@ class UserDB:
                     )
         except (httpx.HTTPError, httpx.InvalidURL):
             raise DBError("Could not update AI consent.") from None
+
+    async def _daily_report_rpc(self, name: str, payload: dict):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(f"{self._base}/rpc/{name}", json=payload, headers=self._headers())
+        except (httpx.HTTPError, httpx.InvalidURL):
+            raise DBError("Daily report service is unavailable.") from None
+        _check_status(response)
+        return response
+
+    async def set_daily_report_schedule(self, enabled: bool, zone_name: str | None) -> None:
+        await self._daily_report_rpc("set_daily_report_schedule", {
+            "expected_account": self.user_id, "enabled": enabled, "zone_name": zone_name,
+        })
+
+    async def claim_daily_report_notice(self) -> bool:
+        response = await self._daily_report_rpc("claim_daily_report_notice", {"expected_account": self.user_id})
+        try:
+            value = decode_json(response.content)
+        except ValueError:
+            raise InvalidDBResponse() from None
+        if type(value) is not bool:
+            raise InvalidDBResponse()
+        return value
         _check_status(res)
 
     async def medication_safety_version(self) -> str | None:

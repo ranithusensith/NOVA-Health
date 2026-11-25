@@ -178,6 +178,9 @@ A reviewed assistant request can carry `weather: {"city_id": 123, "consent": tru
 |---|---|---|
 | POST | `/assistant/chat` | Send a reviewed question to Gemini after opt-in |
 | POST | `/assistant/comparison` | Compare two approved record categories on the NOVA backend |
+| GET, PUT | `/reports/automatic` | List retained report metadata or update the signed-in account's schedule |
+| GET | `/reports/automatic/{date}` | Render a saved daily snapshot by its report date |
+| POST | `/reports/automatic/notice` | Claim the signed-in account's latest eligible generic device notice once |
 | POST | `/symptoms/check` | Check an authenticated, unsaved symptom draft using NOVA’s local red-flag rules |
 | GET | `/privacy/ai` | Read provider availability, disclosure version and current account consent |
 | POST | `/privacy/ai` | Enable with the current disclosure version, or revoke consent |

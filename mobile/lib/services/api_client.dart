@@ -22,6 +22,8 @@ class ApiException implements Exception {
     final message = switch (code) {
       'UNAUTHORIZED' => 'Sign in again.',
       'INVALID_CITY' => 'Enter a city name or choose a city from the search results.',
+      'INVALID_REPORT_ZONE' => 'Choose a supported time zone in your device settings.',
+      'REPORT_NOT_AVAILABLE' => 'This saved report is unavailable.',
       'WEATHER_UNAVAILABLE' => 'City search is unavailable. Try again later.',
       'FORBIDDEN' => 'Your account cannot perform this action.',
       'AUTH_UNAVAILABLE' || 'AUTH_RESPONSE_INVALID' =>
@@ -324,6 +326,30 @@ class ApiClient {
     }).query;
     final data = await _getJson('/api/v1/reports/daily?$query');
     return (data['report'] as String?) ?? '';
+  }
+
+  Future<Map<String, dynamic>> automaticReports() => _getJson('/api/v1/reports/automatic');
+
+  Future<void> setAutomaticReports(String owner, {required bool enabled, String? timeZone}) async {
+    if (aiAccountId != owner) throw ApiException('Use the account that opened report settings.');
+    await _requestJson('PUT', '/api/v1/reports/automatic', payload: {
+      'expected_account': owner,
+      'enabled': enabled,
+      'time_zone': timeZone,
+    });
+  }
+
+  Future<String> savedAutomaticReport(String date) async {
+    final data = await _getJson('/api/v1/reports/automatic/${Uri.encodeComponent(date)}');
+    return data['report'] as String;
+  }
+
+  Future<bool> claimAutomaticReportNotice(String owner) async {
+    if (aiAccountId != owner) return false;
+    final data = await _postJson('/api/v1/reports/automatic/notice', {
+      'expected_account': owner,
+    }, timeout: const Duration(seconds: 20));
+    return data['claimed'] == true;
   }
 
   Future<EmergencyResult> triggerEmergencyDetailed() async {

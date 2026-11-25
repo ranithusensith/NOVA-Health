@@ -14,6 +14,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.plugin.common.MethodChannel
 import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -21,6 +22,11 @@ import kotlinx.coroutines.launch
 class MainActivity : FlutterFragmentActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "nova_health/report_calendar")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "timeZone") result.success(ZoneId.systemDefault().id)
+                else result.notImplemented()
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "nova_health/emergency")
             .setMethodCallHandler { call, result ->
                 if (call.method != "openSms") {

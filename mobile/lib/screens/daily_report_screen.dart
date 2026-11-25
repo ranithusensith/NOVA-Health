@@ -17,6 +17,7 @@ import '../widgets/mood_face.dart';
 import '../widgets/pressable.dart';
 import '../widgets/scroll_edge_fade.dart';
 import '../widgets/states.dart';
+import 'automatic_reports_screen.dart';
 
 void openDailyReport(BuildContext context) {
   Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DailyReportScreen()));
@@ -91,6 +92,13 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
               builder: (context, snap) {
                 final children = <Widget>[
                   Semantics(header: true, child: Text('Daily report', style: NovaType.largeTitle.copyWith(color: c.textPrimary))),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () => openAutomaticReports(context),
+                      child: const Text('Automatic reports'),
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   _DateSwitcher(
                     title: _dayTitle(),

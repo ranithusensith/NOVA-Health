@@ -25,6 +25,7 @@ Run each file in order and stop on any SQL error. Apply the full sequence before
 | 13 | [013_symptom_tracking.sql](../backend/changes/013_symptom_tracking.sql) | Add symptom notes, record revisions, validation and owner-scoped writes. |
 | 14 | [014_wearable_daily_totals.sql](../backend/changes/014_wearable_daily_totals.sql) | Add owner-scoped daily step and sleep totals with an atomic refresh RPC. |
 | 15 | [015_meal_quantity_validation.sql](../backend/changes/015_meal_quantity_validation.sql) | Validate newly written meal quantities while preserving existing rows and access policies. |
+| 16 | [016_automatic_daily_reports.sql](../backend/changes/016_automatic_daily_reports.sql) | Add opt-in schedules, owner-readable daily snapshots, and an account-bound notice claim. |
 
 Supabase Auth owns account identities. A signup creates a profile with the account UUID, the optional display name, empty conditions and goals, and onboarding marked incomplete. Health details remain unset until the user enters them. Existing profile fields retain their saved values. AI processing consent still requires its own explicit opt-in.
 
@@ -47,6 +48,7 @@ Check the migration history and review a schema-only snapshot against these file
 - Apply `013` after `012` and before using symptom tracking in Flutter or running the matching FastAPI version. Existing symptom entries remain readable. Verify the PostgREST schema cache and grants in an isolated deployment copy.
 - Apply `014` after `013` and before releasing wearable activity imports. Verify the new table, RPC and PostgREST schema cache on an isolated copy.
 - Apply `015` after `014`. The `NOT VALID` constraints enforce limits on new writes without scanning or rewriting meal history. Verify that legacy rows remain readable and invalid inserts fail on a disposable copy.
+- Apply `016` after `015`. Schedule the separate Cron job only on an approved environment with Supabase Cron enabled. Follow the [automatic report operations notes](requirements/p2-2-automated-daily-reports.md#scheduler-setup).
 - Run the upgrade during a maintenance window. The signup trigger installation and constraint validation acquire locks. Take a backup before applying changes to an existing project.
 
 ## Application database contract
@@ -122,7 +124,8 @@ psql -X -v ON_ERROR_STOP=1 -v p14_before_migration=1 \
   -f backend/changes/tests/meal_quantity_validation.sql
 
 PGOPTIONS='-c role=h1_migration_owner' psql -X -v ON_ERROR_STOP=1 \
-  -f backend/changes/015_meal_quantity_validation.sql
+  -f backend/changes/015_meal_quantity_validation.sql \
+  -f backend/changes/016_automatic_daily_reports.sql
 
 psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/medication_safety_review.sql \
@@ -130,6 +133,7 @@ psql -X -v ON_ERROR_STOP=1 \
   -f backend/changes/tests/symptom_tracking.sql \
   -f backend/changes/tests/wearable_daily_totals.sql \
   -f backend/changes/tests/meal_quantity_validation.sql \
+  -f backend/changes/tests/automatic_daily_reports.sql \
   -f backend/changes/tests/atomic_health_profile.sql \
   -f backend/changes/tests/medication_dose_occurrences.sql \
   -f backend/changes/tests/lab_result_fidelity.sql \
@@ -138,7 +142,7 @@ psql -X -v ON_ERROR_STOP=1 \
 
 Start the test session as the disposable cluster administrator. The fixtures simulate the Auth schema, the Auth insert role, PostgREST roles and default API grants. They verify PostgreSQL access and integrity. Use separate loopback HTTP services or a disposable Supabase environment for token and HTTP integration.
 
-To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same verification sequence through migration `015`.
+To reproduce an upgrade when `002` through `004` have already run, start from the legacy fixture in a third disposable database. Apply those three files first, then apply `001` and `005`. Apply the H2 legacy fixture and `006` through `008`. Use the same H6 fixture and `009` and `010` commands above, then run the same verification sequence through migration `016`.
 
 ## H2 patient isolation and verification limits
 
