@@ -26,7 +26,7 @@ import 'reminders_screen.dart';
 import 'wearable_activity_screen.dart';
 
 /// 09 Profile and settings — account, daily goals, emergency contacts,
-/// appearance, connected devices, privacy and sign out.
+/// appearance, health data imports, privacy and sign out.
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -394,25 +394,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
               ),
 
-              // ---------------- Devices
-              const SectionLabel('Connected devices'),
+              const SectionLabel('Health data imports'),
               _Group(children: [
                 _NavRow(
                   icon: Icons.watch_outlined,
                   title: 'Import steps and sleep',
                   onTap: () => openWearableActivity(context),
                 ),
-                for (final d in const [
-                  ('Apple Watch', Icons.watch_outlined),
-                  ('Samsung Galaxy Watch', Icons.watch_outlined),
-                  ('Fitbit', Icons.monitor_heart_outlined),
-                ])
-                    _NavRow(
-                    icon: d.$2,
-                    title: d.$1,
-                    trailing: d.$1 == 'Apple Watch' ? 'Apple Health' : 'Health Connect',
-                    onTap: () => openHeartRate(context),
-                  ),
+                _NavRow(
+                  icon: Icons.monitor_heart_outlined,
+                  title: 'Import heart rate',
+                  onTap: () => openHeartRate(context),
+                ),
               ]),
 
               // ---------------- Privacy

@@ -7,6 +7,7 @@ import '../data/health_repository.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/charts.dart';
 import '../widgets/content.dart';
+import '../widgets/meal_records.dart';
 import '../widgets/mood_face.dart';
 import '../widgets/states.dart';
 
@@ -119,6 +120,10 @@ class _TrackHistoryState extends State<TrackHistory> {
                   : (d.dosesScheduled == 0 ? '—' : '${d.dosesTaken} of ${d.dosesScheduled}'),
             ),
           ]),
+          if (d.mealRecords case final records? when records.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            MealRecords(meals: records),
+          ],
         ],
       ),
     );

@@ -5,12 +5,14 @@ import 'package:flutter/services.dart';
 import '../data/care_models.dart';
 import '../data/care_repository.dart';
 import '../data/daily_metrics.dart';
+import '../data/nutrition.dart';
 import '../data/sample_data.dart';
 import '../services/api_client.dart';
 import '../theme/nova_theme.dart';
 import '../widgets/activity_rings.dart';
 import '../widgets/content.dart';
 import '../widgets/glass.dart';
+import '../widgets/meal_records.dart';
 import '../widgets/mood_face.dart';
 import '../widgets/pressable.dart';
 import '../widgets/scroll_edge_fade.dart';
@@ -154,6 +156,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
       ..writeln('Water: ${s.waterMl == null ? 'unknown' : '${s.waterMl} mL logged'}')
       ..writeln('Sleep: ${s.sleepHours == null ? 'unknown' : '${s.sleepHours!.toStringAsFixed(1)} h'}')
       ..writeln('Nutrition: ${s.calories == null ? 'calorie total unknown' : '${s.calories} kcal estimated'}')
+      ..writeln(_nutrientTotals(s))
       ..writeln('Medications: ${s.dosesTaken} of ${s.dosesScheduled} doses');
     if (s.unassignedDoseLogs > 0) {
       text.writeln('${s.unassignedDoseLogs} dose log(s) without a scheduled time');
@@ -166,6 +169,11 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
     Clipboard.setData(ClipboardData(text: text.toString().trim()));
     showNovaToast(context, 'Report copied');
   }
+
+  String _nutrientTotals(DayStats stats) => [
+    for (final field in NutritionField.values.skip(1))
+      '${field.label}: ${field.display(nutritionTotal(stats.mealRecords, field))}',
+  ].join(' · ');
 
   List<Widget> _content(BuildContext context, _ReportData data) {
     final c = context.nova;
@@ -293,8 +301,13 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
         value: calories == null ? 'Calories unknown' : '${formatThousands(calories)} kcal',
         progress: null,
         insight: meals == null ? 'Meal logs unavailable.'
-            : meals == 0 ? 'No meals logged.' : '$meals confirmed meal(s). Calories are estimates.',
+            : meals == 0 ? 'No meals logged.'
+            : '$meals confirmed meal(s). Values are estimates.\n${_nutrientTotals(s)}',
       ),
+      if (s.mealRecords case final records? when records.isNotEmpty) ...[
+        const SizedBox(height: 12),
+        MealRecords(meals: records),
+      ],
       const SizedBox(height: 12),
       _MetricCard(
         icon: Icons.medication_rounded,

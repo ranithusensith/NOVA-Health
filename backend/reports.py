@@ -5,6 +5,7 @@ Daily health report computed and written entirely within NOVA.
 from datetime import date, timedelta
 
 import daily_metrics as metrics
+import nutrition
 import safety
 import symptoms
 import tools
@@ -62,7 +63,7 @@ async def build_daily_data(db, day: date, *, bounds=None) -> dict:
     water = await _day_rows(db, "water_logs", "amount_ml,logged_at", "logged_at", bounds)
     sleep = await _day_rows(db, "sleep_logs", "hours,logged_at", "logged_at", bounds)
     mood_rows = await _day_rows(db, "mood_logs", "mood,logged_at", "logged_at", bounds)
-    meals = await _day_rows(db, "meal_logs", "calories,logged_at", "logged_at", bounds,
+    meals = await _day_rows(db, "meal_logs", "calories,nutrients,logged_at", "logged_at", bounds,
                             {"status": "eq.confirmed"})
     heart = await _day_rows(db, "wearable_samples", "value,recorded_at,context", "recorded_at", bounds,
                             {"metric": "eq.heart_rate"})
@@ -110,7 +111,8 @@ async def build_daily_data(db, day: date, *, bounds=None) -> dict:
         "sleep_goal_hours": metrics.number(goals.get("sleep_goal_hours"), minimum=0.1, maximum=24),
         "mood": mood,
         "meals": len(meals) if meals is not None else None,
-        "calories": metrics.total(meals, "calories"),
+        "calories": nutrition.total(meals, "calories"),
+        "nutrients": {key: nutrition.total(meals, key) for key in nutrition.LIMITS if key != "calories"},
         "heart": heart_summary,
         "doses_scheduled": scheduled,
         "doses_taken": taken,
@@ -145,6 +147,9 @@ def highlights(d: dict) -> list[str]:
     if d["meals"]:
         calories = "calorie total unknown" if d["calories"] is None else f"about {d['calories']} kcal"
         out.append(f"Meals: {d['meals']} logged, {calories}")
+        for label, key in (("Protein", "protein_g"), ("Carbs", "carbs_g"), ("Fat", "fat_g")):
+            amount = d["nutrients"][key]
+            out.append(f"{label}: unknown" if amount is None else f"{label}: {amount:g} g estimated")
     else:
         out.append("Meals: unavailable" if d["meals"] is None else "Meals: none logged")
     h = d["heart"]

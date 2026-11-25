@@ -2,6 +2,8 @@
 /// Pure Dart (no Flutter, no Supabase) so the logic is easy to unit test.
 library;
 
+import 'nutrition.dart';
+
 String ymd(DateTime d) =>
     '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
@@ -331,6 +333,7 @@ class DayStats {
     this.unassignedDoseLogs = 0,
     this.calories,
     this.mealCount,
+    this.mealRecords,
   });
 
   final DateTime day;
@@ -351,6 +354,7 @@ class DayStats {
   final int unassignedDoseLogs;
   final int? calories;
   final int? mealCount;
+  final List<MealRecord>? mealRecords;
 }
 
 /// Short weekday label (Mon, Tue …).

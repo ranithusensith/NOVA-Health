@@ -2,12 +2,11 @@
 Prescription and food scanning: prompt, call the model, validate the output.
 
 Design rules
-- The model output is never trusted: every field is validated and clamped.
+- The model output is never trusted: fields are checked before use.
 - Results are drafts. The app must ask the user to confirm before saving.
 - Only reviewed, redacted clinical text is sent for medical document scans.
 """
 
-import math
 import re
 from datetime import date
 import json
@@ -17,6 +16,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import lab_results
 import llm
+import nutrition
 import safety
 
 
@@ -153,10 +153,10 @@ FOOD_PROMPT = """Look at this image and return exactly this JSON shape:
 {
   "is_food": true or false,
   "description": "short name of the meal, for example Rice with chicken curry",
-  "calories": integer kcal for the visible portion,
-  "protein_g": number,
-  "carbs_g": number,
-  "fat_g": number,
+  "calories": integer kcal for the visible portion or null if unknown,
+  "protein_g": number with up to one decimal place or null,
+  "carbs_g": number with up to one decimal place or null,
+  "fat_g": number with up to one decimal place or null,
   "confidence": number from 0 to 1
 }
 Set is_food to false if the image does not show food or drink."""
@@ -186,26 +186,11 @@ def parse_prescription(raw: dict, identifiers=()) -> PrescriptionResult:
 
 
 def parse_food(raw: dict) -> FoodResult:
-    def bounded(value, limit, digits=None):
-        if type(value) not in (str, int, float):
-            return None
-        try:
-            value = float(value)
-        except (ValueError, OverflowError):
-            return None
-        if not math.isfinite(value) or value < 0:
-            return None
-        value = min(limit, value)
-        return int(value) if digits is None else round(value, digits)
-
     description = raw.get("description")
     return FoodResult(
         is_food=raw.get("is_food") is True,
         description=safety.redact(description).strip()[:160] if isinstance(description, str) else "",
-        calories=bounded(raw.get("calories"), 5000),
-        protein_g=bounded(raw.get("protein_g"), 500, 1),
-        carbs_g=bounded(raw.get("carbs_g"), 800, 1),
-        fat_g=bounded(raw.get("fat_g"), 500, 1),
+        **{key: nutrition.quantity(key, raw.get(key), estimate=True) for key in nutrition.LIMITS},
         confidence=_clamp_confidence(raw.get("confidence")),
     )
 

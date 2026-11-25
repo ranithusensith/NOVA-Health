@@ -1,3 +1,5 @@
+import 'nutrition.dart';
+
 /// Results returned by the backend scan endpoints (drafts until the user confirms).
 class ScanMedication {
   const ScanMedication({
@@ -137,13 +139,12 @@ class FoodScan {
   final double confidence;
 
   factory FoodScan.fromJson(Map<String, dynamic> j) {
-    final n = ((j['nutrients'] as Map?) ?? const {}).cast<String, dynamic>();
     return FoodScan(
       description: (j['description'] as String?) ?? '',
-      calories: (j['calories'] as num?)?.toInt(),
-      proteinG: (n['protein_g'] as num?)?.toDouble(),
-      carbsG: (n['carbs_g'] as num?)?.toDouble(),
-      fatG: (n['fat_g'] as num?)?.toDouble(),
+      calories: NutritionField.calories.read(j) as int?,
+      proteinG: NutritionField.protein.read(j)?.toDouble(),
+      carbsG: NutritionField.carbs.read(j)?.toDouble(),
+      fatG: NutritionField.fat.read(j)?.toDouble(),
       confidence: (j['confidence'] as num?)?.toDouble() ?? 0,
     );
   }

@@ -112,7 +112,7 @@ class _ScanCameraScreenState extends State<ScanCameraScreen> {
         );
       } else {
         final food = await api.scanFood(file);
-        result = FoodResultScreen(scan: food, imageBytes: bytes);
+        result = FoodResultScreen(scan: food, imageBytes: bytes, expectedOwner: owner);
       }
       if (!mounted || !_sameAccount(owner)) return;
       Navigator.of(context).pushReplacement(MaterialPageRoute(
